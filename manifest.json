@@ -1,0 +1,14 @@
+{
+  "name": "Español — Spanish Learning",
+  "short_name": "Español",
+  "description": "Learn Spanish from A0 to B1/B2 with 150 days of structured lessons",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f0f1a",
+  "theme_color": "#58cc02",
+  "categories": ["education", "language"],
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
