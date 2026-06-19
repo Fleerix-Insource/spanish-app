@@ -14,18 +14,19 @@ function defaultState() {
   return {
     completed:[], xp:0, hearts:5, lastHeartRefill:null, streak:0, lastActive:null, gems:0,
     failedConcepts:[], useSpanish:false, darkMode:true,
-    totalCorrect:0, totalWrong:0, wordsLearned:0,
+    totalCorrect:0, totalWrong:0, wordsLearned:0, perfectLessons:0,
     badges:[],
     dailyQuests:null, lastQuestDate:'',
     dailyActivity:{},
-    dueReview:{}
+    dueReview:{},
+    voiceURI:'', spanishVariant:'es-MX', compactMode:false, compactPos:null
   };
 }
 function t(en, es) { return state.useSpanish ? (es || en) : en; }
 function loadState() {
   try {
     const s = JSON.parse(localStorage.getItem('es150duo'));
-    if (s && 'completed' in s) return s;
+    if (s) return { ...defaultState(), ...s };
   } catch(e) {}
   return defaultState();
 }
@@ -57,8 +58,7 @@ function getPhase(day) {
 // ===== HEARTS =====
 function loseHeart() {
   if (state.hearts > 0) state.hearts--;
-  if (state.hearts < MAX_HEARTS && state.lastHeartRefill === null) state.lastHeartRefill = now();
-  if (state.hearts === 0) state.lastHeartRefill = now();
+  if (state.lastHeartRefill === null) state.lastHeartRefill = now();
   saveState();
 }
 function refillHearts() {
@@ -87,7 +87,20 @@ function updateStreak() {
 function trackCorrect(ex) {
   state.totalCorrect++;
   const word = ex.sourceEs || ex.answer || '';
-  if (word && !state.failedConcepts.find(c => c.es === word)) {
+  if (word) {
+    const idx = state.failedConcepts.findIndex(c => c.es === word);
+    if (idx !== -1) {
+      state.failedConcepts.splice(idx, 1);
+      saveState();
+    }
+    // Remove from spaced repetition due list
+    Object.keys(state.dueReview).forEach(day => {
+      const dIdx = state.dueReview[day].indexOf(word);
+      if (dIdx !== -1) {
+        state.dueReview[day].splice(dIdx, 1);
+        saveState();
+      }
+    });
   }
 }
 function trackWrong(ex) {
@@ -120,6 +133,7 @@ const ALL_BADGES = [
 function badgeLabel(b) { return t(b.nameEn, b.nameEs); }
 function badgeDesc(b) { return t(b.descEn, b.descEs); }
 function checkBadges() {
+  let earned = false;
   ALL_BADGES.forEach(b => {
     if (state.badges.includes(b.id)) return;
     let earn = false;
@@ -131,11 +145,11 @@ function checkBadges() {
     if (b.id === 'lessons_50' && state.completed.length >= 50) earn = true;
     if (b.id === 'words_100' && state.totalCorrect >= 100) earn = true;
     if (b.id === 'words_500' && state.totalCorrect >= 500) earn = true;
-    if (b.id === 'checkpoint') earn = true;
     if (b.id === 'phase_5') earn = state.completed.some(d => { const dd = getDayData(d); return dd && dd.phase >= 5; });
     if (b.id === 'gems_100' && state.gems >= 100) earn = true;
-    if (earn) { state.badges.push(b.id); saveState(); showToast('🏆 ' + badgeLabel(b)); }
+    if (earn) { state.badges.push(b.id); saveState(); showToast('🏆 ' + badgeLabel(b)); playSFX('badge'); earned = true; }
   });
+  if (earned) celebrate(3000);
 }
 
 // ===== DAILY QUESTS =====
@@ -147,7 +161,7 @@ const ALL_QUESTS = [
   { id:'q_xp50', icon:'⭐', nameEn:'Earn 50 XP', nameEs:'Gana 50 XP', done:() => state.xp },
   { id:'q_xp100', icon:'⭐', nameEn:'Earn 100 XP', nameEs:'Gana 100 XP', done:() => state.xp },
   { id:'q_gems5', icon:'💎', nameEn:'Collect 5 gems', nameEs:'Colecciona 5 gemas', done:() => state.gems },
-  { id:'q_no_mistakes', icon:'💪', nameEn:'Complete a lesson perfectly', nameEs:'Lección perfecta', done:() => 0 },
+  { id:'q_no_mistakes', icon:'💪', nameEn:'Complete a lesson perfectly', nameEs:'Lección perfecta', done:() => state.perfectLessons || 0 },
 ];
 function questLabel(q) { return t(q.nameEn, q.nameEs); }
 function generateDailyQuests() {
@@ -185,11 +199,14 @@ function scheduleReview(day, es) {
   saveState();
 }
 function getDueReviews() {
+  const seen = new Set();
   const due = [];
   Object.keys(state.dueReview).forEach(day => {
     if (state.dueReview[day].length === 0) return;
     const words = state.dueReview[day];
     words.forEach(es => {
+      if (seen.has(es)) return;
+      seen.add(es);
       const dd = getDayData(parseInt(day));
       if (dd) {
         const w = dd.vocab && dd.vocab.words ? dd.vocab.words.find(v => v.es === es) : null;
@@ -201,14 +218,41 @@ function getDueReviews() {
 }
 
 // ===== AUDIO =====
+let _voiceCache = [];
+function initVoices() {
+  if (!window.speechSynthesis) return;
+  const v = window.speechSynthesis.getVoices();
+  if (v.length > 0) _voiceCache = v;
+  window.speechSynthesis.onvoiceschanged = () => { _voiceCache = window.speechSynthesis.getVoices(); };
+}
+function getSpanishVoices() {
+  if (_voiceCache.length === 0 && window.speechSynthesis) _voiceCache = window.speechSynthesis.getVoices();
+  const variant = state.spanishVariant || 'es-MX';
+  let voices = _voiceCache.filter(v => v.lang && v.lang.startsWith(variant));
+  if (voices.length === 0) voices = _voiceCache.filter(v => v.lang && v.lang.startsWith('es'));
+  return voices;
+}
+function getBestVoice() {
+  const voices = getSpanishVoices();
+  if (voices.length === 0) return null;
+  if (state.voiceURI) { const f = voices.find(v => v.voiceURI === state.voiceURI); if (f) return f; }
+  const google = voices.find(v => v.name.includes('Google'));
+  if (google) return google;
+  const nonMs = voices.find(v => !v.name.includes('Microsoft'));
+  if (nonMs) return nonMs;
+  return voices[0];
+}
 function speak(text, rate) {
   if (!window.speechSynthesis) return Promise.resolve();
+  if (window.speechSynthesis.speaking) window.speechSynthesis.cancel();
   return new Promise(resolve => {
-    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'es-ES';
+    u.lang = state.spanishVariant || 'es-MX';
     u.rate = rate || 0.82;
+    const voice = getBestVoice();
+    if (voice) u.voice = voice;
     u.onend = resolve;
+    u.onerror = resolve;
     window.speechSynthesis.speak(u);
   });
 }
@@ -292,6 +336,56 @@ const SFX = {
 };
 function playSFX(name) { if (SFX[name]) SFX[name](); }
 
+// ===== CELEBRATION SYSTEM (Confetti) =====
+function celebrate(duration) {
+  duration = duration || 2000;
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = `position:${state.compactMode?'absolute':'fixed'};inset:0;width:100%;height:100%;pointer-events:none;z-index:9999`;
+  canvas.width = state.compactMode ? (document.getElementById('root')?.clientWidth || 420) : window.innerWidth;
+  canvas.height = state.compactMode ? (document.getElementById('root')?.clientHeight || 700) : window.innerHeight;
+  olParent().appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const colors = ['#58cc02','#1cb0f6','#ff9600','#ff4b4b','#ce82ff','#ff9600','#fff'];
+  const particles = [];
+  const count = 120;
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height - canvas.height,
+      w: Math.random() * 10 + 5,
+      h: Math.random() * 6 + 3,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      vx: Math.random() * 6 - 3,
+      vy: Math.random() * 4 + 2,
+      rot: Math.random() * 360,
+      rv: Math.random() * 10 - 5,
+      opacity: 1
+    });
+  }
+  const start = performance.now();
+  function draw(now) {
+    const elapsed = now - start;
+    if (elapsed > duration) { canvas.remove(); return; }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    particles.forEach(p => {
+      p.x += p.vx;
+      p.vy += 0.1;
+      p.y += p.vy;
+      p.rot += p.rv;
+      if (elapsed > duration * 0.7) p.opacity = Math.max(0, 1 - (elapsed - duration * 0.7) / (duration * 0.3));
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot * Math.PI / 180);
+      ctx.globalAlpha = p.opacity;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w/2, -p.h/2, p.w, p.h);
+      ctx.restore();
+    });
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+}
+
 // ===== HELPERS =====
 function shuffle(arr) {
   const a = [...arr];
@@ -317,9 +411,35 @@ function getAllPhaseVocab(phase) {
   return words;
 }
 
+// ===== WORD BANK (Chip-based answering) =====
+function generateWordBank(ex) {
+  const answer = ex.answer || '';
+  const answerWords = answer.split(/\s+/).filter(w => w.length > 0);
+  const pool = new Set();
+  answerWords.forEach(w => pool.add(w));
+  const allWords = getAllUnlockedWords();
+  const extras = shuffle(allWords.filter(w => !answerWords.includes(w.es) && !answer.includes(w.es))).slice(0, 4);
+  extras.forEach(w => pool.add(w.es));
+  if (pool.size < answerWords.length + 2) {
+    const fallbacks = ['el','la','un','una','y','en','de','no','es','son','por','para','con','mi','tu','su','yo','tú','él','ella','nosotros','ellos','bien','muy','pero','más','que','como','este','esta','hay','tengo','soy','eres','está','estoy','con','sin','a','al','del','lo','las','los','se','me','te','le','nos','les','casa','libro','amigo','agua','tiempo','persona','gracias','hola','adiós','sí','no','nunca','siempre','también','bien','mal','grande','pequeño','nuevo','bueno','malo','mismo','otro','cada','mucho','poco','todo','solo','primero','último','largo','corto','feliz','triste','fácil','difícil','rápido','lento','cerca','lejos','arriba','abajo','dentro','fuera','antes','después','hoy','mañana','ayer','noche','día','semana','mes','año','hora','minuto','siempre','nunca','ya','todavía','ahora','luego','pronto','tarde','temprano','solo','también','además','aquí','allí','ahí','dónde','cómo','qué','quién','cuándo','cuánto','por qué','porque','pero','sin embargo','aunque','entonces','así','también','tampoco','si','no','quizás','tal vez','ojalá'];
+    while (pool.size < answerWords.length + 2 && fallbacks.length > 0) {
+      const fb = fallbacks[Math.floor(Math.random() * fallbacks.length)];
+      if (!answerWords.includes(fb)) pool.add(fb);
+    }
+  }
+  return shuffle([...pool]);
+}
+function renderWordBank(ex) {
+  const bank = generateWordBank(ex);
+  if (!bank || bank.length < 2) return '';
+  return `<div class="word-bank" id="wordBank">${bank.map(w => 
+    `<button class="word-bank-chip" data-word="${w.replace(/"/g, '&quot;')}">${w}</button>`
+  ).join('')}</div>`;
+}
+
 // ===== CONCEPT INFO BUILDER =====
 function getConceptInfo(es, en) {
-  const isVerb = /(?:ar|er|ir)$/i.test(es) && es.length > 2;
+  const isVerb = /(?:ar|er|ir)$/i.test(es) && es.length > 1 && /^to\b/i.test(en);
   const endsO = /o$/.test(es);
   const endsA = /a$/.test(es);
   const isAdjEnding = /able$/.test(es) || /ible$/.test(es) || /[ae]s$/.test(es);
@@ -328,6 +448,302 @@ function getConceptInfo(es, en) {
   const tc = (e, s) => t(e, s);
 
   let info = { word: es, translation: en, type: 'vocabulary', typeLabel: tc('Vocabulary','Vocabulario'), gender: null, notes: '', examples: [], bilingualExamples: [], conjugations: [], conjugationDetails: [], verbType: null, relatedForms: [] };
+  const normEs = normalize(es);
+  const pluralizeNoun = word => /z$/i.test(word) ? `${word.slice(0, -1)}ces` : (/[aeiouáéíóú]$/i.test(word) ? `${word}s` : `${word}es`);
+  const setNounInfo = isFeminine => {
+    const article = isFeminine ? 'La' : 'El';
+    const pluralArticle = isFeminine ? 'Las' : 'Los';
+    const plural = pluralizeNoun(es);
+    const adjective = isFeminine ? 'bonita' : 'bonito';
+    const pluralAdjective = isFeminine ? 'nuevas' : 'nuevos';
+    info.type = 'sustantivo';
+    info.gender = isFeminine ? tc('Feminine','femenino') : tc('Masculine','masculino');
+    info.typeLabel = tc(isFeminine ? 'Noun (feminine)' : 'Noun (masculine)', isFeminine ? 'Sustantivo (femenino)' : 'Sustantivo (masculino)');
+    info.notes = tc(
+      `${isFeminine ? 'Feminine' : 'Masculine'} noun. The article is "${isFeminine ? 'la' : 'el'}" in singular, "${isFeminine ? 'las' : 'los'}" in plural.`,
+      `Sustantivo ${isFeminine ? 'femenino' : 'masculino'}. El artículo es "${isFeminine ? 'la' : 'el'}" en singular, "${isFeminine ? 'las' : 'los'}" en plural.`
+    );
+    info.relatedForms = [es, plural];
+    info.examples = [`${article} ${es} es ${adjective}.`, `${pluralArticle} ${plural} son ${pluralAdjective}.`];
+    info.bilingualExamples = [
+      {es:`${article} ${es} es ${adjective}.`, en:`The ${en} is nice.`},
+      {es:`${pluralArticle} ${plural} son ${pluralAdjective}.`, en:`The ${en}s are new.`}
+    ];
+    return info;
+  };
+
+  const functionWords = {
+    el: {
+      type: tc('Definite article','Artículo definido'),
+      notes: tc('Masculine singular article ("the"). The feminine form is "la".', 'Artículo masculino singular ("el"). La forma femenina es "la".'),
+      examples: [{es:'El libro es interesante.', en:'The book is interesting.'}, {es:'Veo el perro.', en:'I see the dog.'}, {es:'La casa es grande.', en:'The house is big.'}]
+    },
+    la: {
+      type: tc('Definite article','Artículo definido'),
+      notes: tc('Feminine singular article ("the"). The masculine form is "el".', 'Artículo femenino singular ("la"). La forma masculina es "el".'),
+      examples: [{es:'La casa es grande.', en:'The house is big.'}, {es:'Veo la mesa.', en:'I see the table.'}, {es:'El libro es interesante.', en:'The book is interesting.'}]
+    },
+    los: {
+      type: tc('Definite article','Artículo definido'),
+      notes: tc('Masculine plural article ("the"). The feminine plural is "las".', 'Artículo masculino plural ("los"). La forma femenina plural es "las".'),
+      examples: [{es:'Los libros son nuevos.', en:'The books are new.'}, {es:'Veo los perros.', en:'I see the dogs.'}, {es:'Las casas son grandes.', en:'The houses are big.'}]
+    },
+    las: {
+      type: tc('Definite article','Artículo definido'),
+      notes: tc('Feminine plural article ("the"). The masculine plural is "los".', 'Artículo femenino plural ("las"). La forma masculina plural es "los".'),
+      examples: [{es:'Las casas son grandes.', en:'The houses are big.'}, {es:'Veo las mesas.', en:'I see the tables.'}, {es:'Los libros son nuevos.', en:'The books are new.'}]
+    },
+    un: {
+      type: tc('Indefinite article','Artículo indefinido'),
+      notes: tc('Masculine singular article ("a/an"). The feminine form is "una".', 'Artículo masculino singular ("un"). La forma femenina es "una".'),
+      examples: [{es:'Tengo un libro.', en:'I have a book.'}, {es:'Veo un perro.', en:'I see a dog.'}, {es:'Tengo una casa.', en:'I have a house.'}]
+    },
+    una: {
+      type: tc('Indefinite article','Artículo indefinido'),
+      notes: tc('Feminine singular article ("a/an"). The masculine form is "un".', 'Artículo femenino singular ("una"). La forma masculina es "un".'),
+      examples: [{es:'Tengo una casa.', en:'I have a house.'}, {es:'Veo una mesa.', en:'I see a table.'}, {es:'Tengo un libro.', en:'I have a book.'}]
+    },
+    unos: {
+      type: tc('Indefinite article','Artículo indefinido'),
+      notes: tc('Masculine plural article ("some"). The feminine plural form is "unas".', 'Artículo masculino plural ("unos"). La forma femenina plural es "unas".'),
+      examples: [{es:'Tengo unos libros.', en:'I have some books.'}, {es:'Unos amigos vienen hoy.', en:'Some friends are coming today.'}, {es:'Tengo unas flores.', en:'I have some flowers.'}]
+    },
+    unas: {
+      type: tc('Indefinite article','Artículo indefinido'),
+      notes: tc('Feminine plural article ("some"). The masculine plural form is "unos".', 'Artículo femenino plural ("unas"). La forma masculina plural es "unos".'),
+      examples: [{es:'Tengo unas flores.', en:'I have some flowers.'}, {es:'Unas amigas vienen hoy.', en:'Some friends are coming today.'}, {es:'Tengo unos libros.', en:'I have some books.'}]
+    },
+    de: {
+      type: tc('Preposition','Preposición'),
+      notes: tc('Means "of" or "from". It often shows possession, origin, or material.', 'Significa "de". Suele indicar posesión, origen o material.'),
+      examples: [{es:'Soy de México.', en:'I am from Mexico.'}, {es:'El libro de Ana es nuevo.', en:"Ana's book is new."}]
+    },
+    del: {
+      type: tc('Contraction','Contracción'),
+      notes: tc('Contraction of "de + el" meaning "of the" or "from the" before a masculine singular noun.', 'Contracción de "de + el" antes de un sustantivo masculino singular.'),
+      examples: [{es:'Vengo del parque.', en:'I come from the park.'}, {es:'El libro del profesor es interesante.', en:"The teacher's book is interesting."}]
+    },
+    mi: {
+      type: tc('Possessive adjective','Adjetivo posesivo'),
+      notes: tc('Means "my" and goes before a singular noun.', 'Significa "mi" y va antes de un sustantivo singular.'),
+      examples: [{es:'Mi casa es pequeña.', en:'My house is small.'}, {es:'Mi amigo estudia español.', en:'My friend studies Spanish.'}]
+    },
+    tu: {
+      type: tc('Possessive adjective','Adjetivo posesivo'),
+      notes: tc('Means "your" for one familiar person and goes before a singular noun.', 'Significa "tu" para una persona cercana y va antes de un sustantivo singular.'),
+      examples: [{es:'Tu libro está aquí.', en:'Your book is here.'}, {es:'Tu casa es grande.', en:'Your house is big.'}]
+    },
+    su: {
+      type: tc('Possessive adjective','Adjetivo posesivo'),
+      notes: tc('Can mean "his", "her", "their", or formal "your". Context tells you which one.', 'Puede significar "su" de él, ella, usted, ellos o ellas. El contexto indica cuál.'),
+      examples: [{es:'Su coche es rojo.', en:'His/Her car is red.'}, {es:'Su familia vive aquí.', en:'Their family lives here.'}]
+    },
+    nuestro: {
+      type: tc('Possessive adjective','Adjetivo posesivo'),
+      notes: tc('Means "our" and changes to match the noun: nuestro, nuestra, nuestros, nuestras.', 'Significa "nuestro" y cambia para concordar con el sustantivo: nuestro, nuestra, nuestros, nuestras.'),
+      examples: [{es:'Nuestro libro está aquí.', en:'Our book is here.'}, {es:'Nuestra casa es grande.', en:'Our house is big.'}]
+    },
+    vuestro: {
+      type: tc('Possessive adjective','Adjetivo posesivo'),
+      notes: tc('Means plural familiar "your" in Spain and changes to match the noun.', 'Significa "vuestro" en España y cambia para concordar con el sustantivo.'),
+      examples: [{es:'Vuestro libro está aquí.', en:'Your book is here.'}, {es:'Vuestra casa es grande.', en:'Your house is big.'}]
+    },
+    mio: {
+      type: tc('Possessive pronoun','Pronombre posesivo'),
+      notes: tc('Means "mine". It changes form to match the thing owned.', 'Significa "mío". Cambia de forma según la cosa poseída.'),
+      examples: [{es:'Este libro es mío.', en:'This book is mine.'}, {es:'La mochila es mía.', en:'The backpack is mine.'}]
+    },
+    tuyo: {
+      type: tc('Possessive pronoun','Pronombre posesivo'),
+      notes: tc('Means "yours" for one familiar person. It changes form to match the thing owned.', 'Significa "tuyo" para una persona cercana. Cambia según la cosa poseída.'),
+      examples: [{es:'Este lápiz es tuyo.', en:'This pencil is yours.'}, {es:'La casa es tuya.', en:'The house is yours.'}]
+    },
+    suyo: {
+      type: tc('Possessive pronoun','Pronombre posesivo'),
+      notes: tc('Can mean "his", "hers", "theirs", or formal "yours". Context tells you which one.', 'Puede significar "suyo" de él, ella, usted, ellos o ellas. El contexto indica cuál.'),
+      examples: [{es:'El coche es suyo.', en:'The car is his/hers/theirs.'}, {es:'La idea es suya.', en:'The idea is his/hers/theirs.'}]
+    },
+    no: {
+      type: tc('Negation','Negación'),
+      notes: tc('Place "no" before the verb to make a sentence negative.', 'Pon "no" antes del verbo para negar una oración.'),
+      examples: [{es:'No hablo francés.', en:'I do not speak French.'}, {es:'No tengo hambre.', en:'I am not hungry.'}]
+    },
+    nunca: {
+      type: tc('Negative adverb','Adverbio negativo'),
+      notes: tc('Means "never". Spanish commonly uses double negatives.', 'Significa "nunca". En español es común usar doble negación.'),
+      examples: [{es:'Nunca como carne.', en:'I never eat meat.'}, {es:'No estudio nunca los domingos.', en:'I never study on Sundays.'}]
+    },
+    jamas: {
+      type: tc('Negative adverb','Adverbio negativo'),
+      notes: tc('Means "never" or "ever" in negative contexts.', 'Significa "jamás" o "nunca" en contextos negativos.'),
+      examples: [{es:'Jamás digo mentiras.', en:'I never tell lies.'}, {es:'No lo haré jamás.', en:'I will never do it.'}]
+    },
+    nada: {
+      type: tc('Negative pronoun','Pronombre negativo'),
+      notes: tc('Means "nothing" or "anything" in negative sentences.', 'Significa "nada" o "algo" en oraciones negativas.'),
+      examples: [{es:'No veo nada.', en:'I do not see anything.'}, {es:'Nada es imposible.', en:'Nothing is impossible.'}]
+    },
+    nadie: {
+      type: tc('Negative pronoun','Pronombre negativo'),
+      notes: tc('Means "nobody" or "anybody" in negative sentences.', 'Significa "nadie" o "alguien" en oraciones negativas.'),
+      examples: [{es:'No hay nadie aquí.', en:'There is nobody here.'}, {es:'Nadie viene hoy.', en:'Nobody is coming today.'}]
+    },
+    ninguno: {
+      type: tc('Negative adjective or pronoun','Adjetivo o pronombre negativo'),
+      notes: tc('Means "none" or "not any". Before a masculine singular noun, it becomes "ningún".', 'Significa "ninguno" o "ningún". Antes de un sustantivo masculino singular se acorta a "ningún".'),
+      examples: [{es:'No tengo ningún libro.', en:'I do not have any book.'}, {es:'Ninguno es correcto.', en:'None of them is correct.'}]
+    },
+    algo: {
+      type: tc('Indefinite pronoun','Pronombre indefinido'),
+      notes: tc('Means "something" or "anything".', 'Significa "algo".'),
+      examples: [{es:'Quiero algo de comer.', en:'I want something to eat.'}, {es:'¿Ves algo?', en:'Do you see anything?'}]
+    },
+    alguien: {
+      type: tc('Indefinite pronoun','Pronombre indefinido'),
+      notes: tc('Means "someone" or "somebody".', 'Significa "alguien".'),
+      examples: [{es:'Alguien llama a la puerta.', en:'Someone is knocking at the door.'}, {es:'Necesito hablar con alguien.', en:'I need to talk with someone.'}]
+    },
+    tampoco: {
+      type: tc('Negative adverb','Adverbio negativo'),
+      notes: tc('Means "neither" or "not either".', 'Significa "tampoco".'),
+      examples: [{es:'Yo tampoco hablo francés.', en:'I do not speak French either.'}, {es:'Ella tampoco viene.', en:'She is not coming either.'}]
+    },
+    siempre: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "always".', 'Significa "siempre".'),
+      examples: [{es:'Siempre estudio por la noche.', en:'I always study at night.'}, {es:'Ella siempre llega temprano.', en:'She always arrives early.'}]
+    },
+    tambien: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "also" or "too".', 'Significa "también".'),
+      examples: [{es:'Yo también estudio español.', en:'I also study Spanish.'}, {es:'Ella también viene.', en:'She is coming too.'}]
+    },
+    en: {
+      type: tc('Preposition','Preposición'),
+      notes: tc('Means "in", "on", or "at" depending on context.', 'Significa "en", "sobre" o "a" según el contexto.'),
+      examples: [{es:'Estoy en casa.', en:'I am at home.'}, {es:'El libro está en la mesa.', en:'The book is on the table.'}]
+    },
+    hola: {
+      type: tc('Greeting','Saludo'),
+      notes: tc('Means "hello" or "hi". Can be used any time of day.', 'Significa "hola". Se puede usar a cualquier hora del día.'),
+      examples: [{es:'¡Hola! ¿Cómo estás?', en:'Hello! How are you?'}, {es:'Hola, ¿qué tal?', en:'Hi, how is it going?'}]
+    },
+    adios: {
+      type: tc('Farewell','Despedida'),
+      notes: tc('Means "goodbye".', 'Significa "adiós".'),
+      examples: [{es:'¡Adiós! Hasta luego.', en:'Goodbye! See you later.'}, {es:'Adiós, nos vemos mañana.', en:'Goodbye, see you tomorrow.'}]
+    },
+    gracias: {
+      type: tc('Expression','Expresión'),
+      notes: tc('Means "thank you".', 'Significa "gracias".'),
+      examples: [{es:'Muchas gracias.', en:'Thank you very much.'}, {es:'Gracias por tu ayuda.', en:'Thanks for your help.'}]
+    },
+    "por favor": {
+      type: tc('Expression','Expresión'),
+      notes: tc('Means "please". Used in requests.', 'Significa "por favor". Se usa en peticiones.'),
+      examples: [{es:'Un café, por favor.', en:'A coffee, please.'}, {es:'Ayúdame, por favor.', en:'Help me, please.'}]
+    },
+    "de nada": {
+      type: tc('Expression','Expresión'),
+      notes: tc('Means "you\'re welcome". Response to gracias.', 'Significa "de nada". Respuesta a gracias.'),
+      examples: [{es:'—Gracias. —De nada.', en:'—Thanks. —You\'re welcome.'}, {es:'De nada, cuando quieras.', en:'You\'re welcome, anytime.'}]
+    },
+    "lo siento": {
+      type: tc('Expression','Expresión'),
+      notes: tc('Means "I\'m sorry".', 'Significa "lo siento".'),
+      examples: [{es:'Lo siento mucho.', en:'I am very sorry.'}, {es:'Lo siento, no entiendo.', en:'I\'m sorry, I don\'t understand.'}]
+    },
+    aqui: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "here". Indicates location.', 'Significa "aquí". Indica ubicación.'),
+      examples: [{es:'Estoy aquí.', en:'I am here.'}, {es:'Ven aquí, por favor.', en:'Come here, please.'}]
+    },
+    alli: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "there".', 'Significa "allí".'),
+      examples: [{es:'El libro está allí.', en:'The book is there.'}, {es:'Vivo allí.', en:'I live there.'}]
+    },
+    donde: {
+      type: tc('Question word','Palabra interrogativa'),
+      notes: tc('Means "where".', 'Significa "dónde".'),
+      examples: [{es:'¿Dónde vives?', en:'Where do you live?'}, {es:'¿Dónde está el baño?', en:'Where is the bathroom?'}]
+    },
+    como: {
+      type: tc('Question word','Palabra interrogativa'),
+      notes: tc('Means "how" or "like/as".', 'Significa "cómo" o "como".'),
+      examples: [{es:'¿Cómo estás?', en:'How are you?'}, {es:'Como tú quieras.', en:'As you wish.'}]
+    },
+    que: {
+      type: tc('Question word','Palabra interrogativa'),
+      notes: tc('Means "what" or "that".', 'Significa "qué" o "que".'),
+      examples: [{es:'¿Qué quieres?', en:'What do you want?'}, {es:'El libro que leo es bueno.', en:'The book that I read is good.'}]
+    },
+    quien: {
+      type: tc('Question word','Palabra interrogativa'),
+      notes: tc('Means "who". Plural is "quiénes".', 'Significa "quién". El plural es "quiénes".'),
+      examples: [{es:'¿Quién es ella?', en:'Who is she?'}, {es:'¿Quiénes son ellos?', en:'Who are they?'}]
+    },
+    mucho: {
+      type: tc('Adverb/Adjective','Adverbio/Adjetivo'),
+      notes: tc('Means "a lot" or "much/many".', 'Significa "mucho" o "muchos".'),
+      examples: [{es:'Muchas gracias.', en:'Thank you very much.'}, {es:'Tengo mucho trabajo.', en:'I have a lot of work.'}]
+    },
+    poco: {
+      type: tc('Adverb/Adjective','Adverbio/Adjetivo'),
+      notes: tc('Means "a little" or "few".', 'Significa "poco" o "pocos".'),
+      examples: [{es:'Hablo un poco de español.', en:'I speak a little Spanish.'}, {es:'Tengo poco tiempo.', en:'I have little time.'}]
+    },
+    hoy: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "today".', 'Significa "hoy".'),
+      examples: [{es:'Hoy estudio español.', en:'Today I study Spanish.'}, {es:'¿Qué haces hoy?', en:'What are you doing today?'}]
+    },
+    manana: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "tomorrow".', 'Significa "mañana".'),
+      examples: [{es:'Mañana voy a viajar.', en:'Tomorrow I am going to travel.'}, {es:'Hasta mañana.', en:'See you tomorrow.'}]
+    },
+    muy: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "very". Used before adjectives and adverbs.', 'Significa "muy". Se usa antes de adjetivos y adverbios.'),
+      examples: [{es:'Muy bien, gracias.', en:'Very well, thanks.'}, {es:'Ella es muy inteligente.', en:'She is very intelligent.'}]
+    },
+    bien: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "well" or "fine".', 'Significa "bien".'),
+      examples: [{es:'Estoy bien.', en:'I am fine.'}, {es:'Hablas bien español.', en:'You speak Spanish well.'}]
+    },
+    mal: {
+      type: tc('Adverb/Adjective','Adverbio/Adjetivo'),
+      notes: tc('Means "badly" or "bad".', 'Significa "mal" o "malo".'),
+      examples: [{es:'Me siento mal.', en:'I feel bad.'}, {es:'Eso está mal.', en:'That is wrong.'}]
+    },
+    si: {
+      type: tc('Adverb','Adverbio'),
+      notes: tc('Means "yes".', 'Significa "sí".'),
+      examples: [{es:'Sí, quiero.', en:'Yes, I want to.'}, {es:'—¿Hablas español? —Sí.', en:'—Do you speak Spanish? —Yes.'}]
+    },
+    senor: {
+      type: tc('Noun','Sustantivo'),
+      notes: tc('Means "sir", "Mr.", or "gentleman". The feminine form is "señora".', 'Significa "señor". La forma femenina es "señora".'),
+      examples: [{es:'Buenos días, señor.', en:'Good morning, sir.'}, {es:'El señor García es profesor.', en:'Mr. García is a teacher.'}, {es:'La señora López es médica.', en:'Mrs. López is a doctor.'}]
+    },
+    senora: {
+      type: tc('Noun','Sustantivo'),
+      notes: tc('Means "ma\'am", "Mrs.", or "lady". The masculine form is "señor".', 'Significa "señora". La forma masculina es "señor".'),
+      examples: [{es:'Buenas tardes, señora.', en:'Good afternoon, ma\'am.'}, {es:'La señora López es médica.', en:'Mrs. López is a doctor.'}, {es:'El señor García es profesor.', en:'Mr. García is a teacher.'}]
+    }
+  };
+
+  const fixedConcept = functionWords[normEs];
+  if (fixedConcept) {
+    info.type = fixedConcept.type;
+    info.typeLabel = fixedConcept.type;
+    info.notes = fixedConcept.notes;
+    info.examples = fixedConcept.examples.map(e => `${e.es} (${e.en})`);
+    info.bilingualExamples = fixedConcept.examples;
+    return info;
+  }
 
   if (hasMulti) {
     info.type = 'expresi\u00f3n';
@@ -336,6 +752,8 @@ function getConceptInfo(es, en) {
       `This is a complete expression used as a single unit.`,
       `Esta es una expresión completa usada como una sola unidad.`
     );
+    info.bilingualExamples = [{es, en}];
+    info.examples = [`${es} — ${en}`];
     if (/^tener\s/i.test(es)) {
       info.type = 'expresi\u00f3n idiom\u00e1tica';
       info.typeLabel = tc('Idiomatic Expression','Expresi\u00f3n idiom\u00e1tica');
@@ -362,6 +780,27 @@ function getConceptInfo(es, en) {
     return info;
   }
 
+  const irregularVerbExamples = {
+    'ser': [{es:'Yo soy estudiante.', en:'I am a student.'}, {es:'Ella es médica.', en:'She is a doctor.'}, {es:'Nosotros somos amigos.', en:'We are friends.'}],
+    'estar': [{es:'Yo estoy en casa.', en:'I am at home.'}, {es:'Ella está cansada.', en:'She is tired.'}],
+    'tener': [{es:'Yo tengo un libro.', en:'I have a book.'}, {es:'Ella tiene hambre.', en:'She is hungry.'}],
+    'ir': [{es:'Yo voy a la escuela.', en:'I go to school.'}, {es:'Ella va al parque.', en:'She goes to the park.'}],
+    'hacer': [{es:'Yo hago la tarea.', en:'I do homework.'}, {es:'Ella hace ejercicio.', en:'She does exercise.'}],
+    'poner': [{es:'Yo pongo la mesa.', en:'I set the table.'}, {es:'Ella pone música.', en:'She puts on music.'}],
+    'salir': [{es:'Yo salgo temprano.', en:'I leave early.'}, {es:'Ella sale con amigos.', en:'She goes out with friends.'}],
+    'venir': [{es:'Yo vengo mañana.', en:'I come tomorrow.'}, {es:'Ella viene hoy.', en:'She comes today.'}],
+    'decir': [{es:'Yo digo la verdad.', en:'I tell the truth.'}, {es:'Ella dice hola.', en:'She says hello.'}],
+    'poder': [{es:'Yo puedo nadar.', en:'I can swim.'}, {es:'Ella puede cantar.', en:'She can sing.'}],
+    'querer': [{es:'Yo quiero agua.', en:'I want water.'}, {es:'Ella quiere estudiar.', en:'She wants to study.'}],
+    'saber': [{es:'Yo sé la respuesta.', en:'I know the answer.'}, {es:'Ella sabe español.', en:'She knows Spanish.'}],
+    'dar': [{es:'Yo doy un regalo.', en:'I give a gift.'}, {es:'Ella da clases.', en:'She gives classes.'}],
+    'ver': [{es:'Yo veo la tele.', en:'I watch TV.'}, {es:'Ella ve una película.', en:'She watches a movie.'}],
+    'oír': [{es:'Yo oigo música.', en:'I hear music.'}, {es:'Ella oye el ruido.', en:'She hears the noise.'}],
+    'traer': [{es:'Yo traigo café.', en:'I bring coffee.'}, {es:'Ella trae noticias.', en:'She brings news.'}],
+    'caer': [{es:'Yo caigo bien.', en:'I am likable.'}, {es:'Ella cae mal.', en:'She is unlikable.'}],
+    'haber': [{es:'Hay mucho ruido.', en:'There is a lot of noise.'}, {es:'Hay dos gatos.', en:'There are two cats.'}]
+  };
+
   if (isVerb) {
     const conjType = es.match(/(ar|er|ir)$/)[1];
     const stem = es.slice(0, -2);
@@ -373,38 +812,52 @@ function getConceptInfo(es, en) {
       ? tc('Irregular verb. Does not follow the regular conjugation pattern.', 'Verbo irregular. No sigue el patrón regular de conjugación.')
       : tc(`Regular -${conjType} verb. Follows the standard conjugation pattern.`, `Verbo regular -${conjType}. Sigue el patrón estándar de conjugación.`);
 
-    const endings = conjType === 'ar' ? ['o','as','a','amos','an'] : conjType === 'er' ? ['o','es','e','emos','en'] : ['o','es','e','imos','en'];
-    const subjects = ['yo','t\u00fa','\u00e9l/ella','nosotros','ellos'];
-    const subjectEn = ['I','You','He/She','We','They'];
     const enStem = en.replace(/^to\s+/i, '');
+    if (!isIrregular) {
+      const endings = conjType === 'ar' ? ['o','as','a','amos','an'] : conjType === 'er' ? ['o','es','e','emos','en'] : ['o','es','e','imos','en'];
+      const subjects = ['yo','t\u00fa','\u00e9l/ella','nosotros','ellos'];
+      const subjectEn = ['I','You','He/She','We','They'];
 
-    info.conjugations = subjects.map((s, i) => `${s} ${stem}${endings[i]}`);
-    info.conjugationDetails = subjects.map((s, i) => {
-      const form = `${stem}${endings[i]}`;
-      const verbEn = i === 2 ? `${enStem}s` : enStem;
-      return {
-        form,
-        subject: s,
-        translation: `${subjectEn[i]} ${verbEn}`,
-        examples: [
-          {es:`${s === '\u00e9l/ella' ? 'Ella' : s.charAt(0).toUpperCase() + s.slice(1)} ${form} todos los d\u00edas.`, en:`${subjectEn[i]} ${verbEn} every day.`},
-          {es:`${s === '\u00e9l/ella' ? '\u00c9l' : s.charAt(0).toUpperCase() + s.slice(1)} ${form} ahora.`, en:`${subjectEn[i]} ${verbEn} now.`}
-        ]
-      };
-    });
-    info.bilingualExamples = info.conjugationDetails.flatMap(d => d.examples).slice(0, 4);
-    info.examples = info.conjugationDetails.map(d => `${d.subject} ${d.form}`);
+      info.conjugations = subjects.map((s, i) => `${s} ${stem}${endings[i]}`);
+      info.conjugationDetails = subjects.map((s, i) => {
+        const form = `${stem}${endings[i]}`;
+        const verbEn = i === 2 ? `${enStem}s` : enStem;
+        return {
+          form,
+          subject: s,
+          translation: `${subjectEn[i]} ${verbEn}`,
+          examples: [
+            {es:`${s === '\u00e9l/ella' ? 'Ella' : s.charAt(0).toUpperCase() + s.slice(1)} ${form} todos los d\u00edas.`, en:`${subjectEn[i]} ${verbEn} every day.`},
+            {es:`${s === '\u00e9l/ella' ? '\u00c9l' : s.charAt(0).toUpperCase() + s.slice(1)} ${form} ahora.`, en:`${subjectEn[i]} ${verbEn} now.`}
+          ]
+        };
+      });
+      info.bilingualExamples = info.conjugationDetails.flatMap(d => d.examples).slice(0, 4);
+      info.examples = info.conjugationDetails.map(d => `${d.subject} ${d.form}`);
+    } else {
+      const ive = irregularVerbExamples[normalize(es)];
+      if (ive) {
+        info.bilingualExamples = ive;
+        info.examples = ive.map(ex => `${ex.es} (${ex.en})`);
+      } else {
+        info.examples = [`${es} — ${en}`];
+        info.bilingualExamples = [{es, en}];
+      }
+    }
     return info;
   }
 
   // Gender-specific word (noun or adjective ending in -o/-a)
   if (endsO || endsA) {
+    const feminineExceptions = new Set(['mano']);
+    const masculineExceptions = new Set(['dia','mapa','problema','idioma','tema','programa','sistema','clima','planeta','sofa']);
+    const isFeminine = feminineExceptions.has(normEs) || (endsA && !masculineExceptions.has(normEs));
     const root = es.slice(0, -1);
     const masc = endsO ? es : root + 'o';
     const fem = endsA ? es : root + 'a';
     const mascPl = masc + 's';
     const femPl = fem + 's';
-    info.gender = endsO ? tc('Masculine','masculino') : tc('Feminine','femenino');
+    info.gender = isFeminine ? tc('Feminine','femenino') : tc('Masculine','masculino');
 
     // Only -able/-ible endings are definitely adjectives; -o/-a could be noun or adjective
     if (isAdjEnding) {
@@ -419,21 +872,16 @@ function getConceptInfo(es, en) {
         {es:`Los ni\u00f1os son ${mascPl}.`, en:`The boys are ${en}.`}
       ];
     } else {
-      info.type = 'sustantivo';
-      info.typeLabel = tc(endsO ? 'Noun (masculine)' : 'Noun (feminine)', endsO ? 'Sustantivo (masculino)' : 'Sustantivo (femenino)');
-      info.notes = tc(
-        `${endsO ? 'Masculine' : 'Feminine'} noun. The article is "${endsO ? 'el' : 'la'}" in singular, "${endsO ? 'los' : 'las'}" in plural.`,
-        `Sustantivo ${endsO ? 'masculino' : 'femenino'}. El artículo es "${endsO ? 'el' : 'la'}" en singular, "${endsO ? 'los' : 'las'}" en plural.`
-      );
-      info.relatedForms = [es, es + 's'];
-      info.examples = [`${endsO ? 'El' : 'La'} ${es} es bonito${endsO ? '' : 'a'}.`, `${endsO ? 'Los' : 'Las'} ${es}s son nuevos${endsO ? '' : 'as'}.`];
-      info.bilingualExamples = [
-        {es:`${endsO ? 'El' : 'La'} ${es} es bonito${endsO ? '' : 'a'}.`, en:`The ${en} is nice.`},
-        {es:`${endsO ? 'Los' : 'Las'} ${es}s son nuevos${endsO ? '' : 'as'}.`, en:`The ${en}s are new.`}
-      ];
+      setNounInfo(isFeminine);
     }
     return info;
   }
+
+  const knownNounGenders = {
+    mujer:'f', flor:'f', ciudad:'f', noche:'f', clase:'f', luz:'f', voz:'f', vez:'f', salud:'f',
+    hombre:'m', papel:'m', lapiz:'m', profesor:'m', director:'m', pie:'m'
+  };
+  if (knownNounGenders[normEs]) return setNounInfo(knownNounGenders[normEs] === 'f');
 
   if (/e$/.test(es) || /[aeiou]s$/.test(es) || /[lnr]/.test(es.slice(-1))) {
     info.type = 'sustantivo';
@@ -443,10 +891,10 @@ function getConceptInfo(es, en) {
       `Noun. The article can be "el" or "la" depending on the word.`,
       `Sustantivo. El artículo puede ser "el" o "la" según la palabra.`
     );
-    info.examples = [`El ${es} es interesante.`, `Me gusta el ${es}.`];
+    info.examples = [`La palabra "${es}" significa "${en}".`, `Practico "${es}" en una frase.`];
     info.bilingualExamples = [
-      {es:`El ${es} es interesante.`, en:`The ${en} is interesting.`},
-      {es:`Me gusta el ${es}.`, en:`I like the ${en}.`}
+      {es:`La palabra "${es}" significa "${en}".`, en:`The word "${es}" means "${en}".`},
+      {es:`Practico "${es}" en una frase.`, en:`I practice "${es}" in a sentence.`}
     ];
     return info;
   }
@@ -467,7 +915,12 @@ function genChoiceEsToEn(vocab, used) {
   const idx = vocab.indexOf(pool[0]);
   used.add(idx);
   const word = vocab[idx];
-  const distractors = shuffle(vocab.filter((_, i) => i !== idx)).slice(0, 3).map(w => w.en);
+  let distractors = shuffle(vocab.filter((_, i) => i !== idx)).slice(0, 3).map(w => w.en);
+  if (distractors.length < 3) {
+    const all = getAllUnlockedWords();
+    const extra = shuffle(all.filter(w => w.es !== word.es)).slice(0, 3 - distractors.length).map(w => w.en);
+    distractors = [...distractors, ...extra];
+  }
   const options = shuffle([word.en, ...distractors]);
   return { id: nextExId(), type:'choice', stem:`¿Qué significa "${word.es}"?`, stemEn:`What does "${word.es}" mean?`, options, correct: options.indexOf(word.en), sourceEs: word.es, sourceEn: word.en };
 }
@@ -478,7 +931,12 @@ function genChoiceEnToEs(vocab, used) {
   const idx = vocab.indexOf(pool[0]);
   used.add(idx);
   const word = vocab[idx];
-  const distractors = shuffle(vocab.filter((_, i) => i !== idx)).slice(0, 3).map(w => w.es);
+  let distractors = shuffle(vocab.filter((_, i) => i !== idx)).slice(0, 3).map(w => w.es);
+  if (distractors.length < 3) {
+    const all = getAllUnlockedWords();
+    const extra = shuffle(all.filter(w => w.es !== word.es)).slice(0, 3 - distractors.length).map(w => w.es);
+    distractors = [...distractors, ...extra];
+  }
   const options = shuffle([word.es, ...distractors]);
   return { id: nextExId(), type:'choice', stem:`¿Cómo se dice "${word.en}" en español?`, stemEn:`How do you say "${word.en}" in Spanish?`, options, correct: options.indexOf(word.es), sourceEs: word.es, sourceEn: word.en };
 }
@@ -489,7 +947,18 @@ function genTranslate(vocab, used) {
   const idx = vocab.indexOf(pool[0]);
   used.add(idx);
   const word = vocab[idx];
-  return { id: nextExId(), type:'translate', prompt:`Traduce al español:`, promptEn:`Translate to Spanish:`, target: word.en, answer: word.es, sourceEs: word.es, sourceEn: word.en };
+  const reverse = Math.random() > 0.5;
+  return { 
+    id: nextExId(), 
+    type:'translate', 
+    prompt: reverse ? `Traduce al inglés:` : `Traduce al español:`, 
+    promptEn: reverse ? `Translate to English:` : `Translate to Spanish:`, 
+    target: reverse ? word.es : word.en, 
+    answer: reverse ? word.en : word.es, 
+    sourceEs: word.es, 
+    sourceEn: word.en,
+    reverse: reverse
+  };
 }
 
 function genListen(vocab, used) {
@@ -510,10 +979,15 @@ function genComplete(items, used) {
   const en = item.en;
   const words = es.split(' ');
   if (words.length < 3) return null;
+  const functionWords = new Set(['el','la','los','las','un','una','unos','unas','de','del','y','e','a','al','en','por','para','con','su','mi','tu','se','le','lo','la','no','que','es','son','soy','eres','está','estoy']);
+  const blankCandidates = words
+    .map((w, i) => ({ word: w.replace(/[.,!?;:¿¡"']/g, ''), idx: i }))
+    .filter(c => !functionWords.has(c.word.toLowerCase()) && c.word.length > 1);
+  if (blankCandidates.length === 0) return null;
   used.add(idx);
-  const blankIdx = Math.floor(words.length / 2);
-  const answer = words[blankIdx].replace(/[.,!?;:]/g, '');
-  const display = words.map((w, i) => i === blankIdx ? '___' : w).join(' ');
+  const chosen = blankCandidates[Math.floor(blankCandidates.length / 2)];
+  const answer = chosen.word;
+  const display = words.map((w, i) => i === chosen.idx ? '___' : w).join(' ');
   return { id: nextExId(), type:'complete', prompt:`Completa la oración:`, promptEn:`Complete the sentence:`, sentence: display, answer, options: null, sourceEs: es, sourceEn: en };
 }
 
@@ -582,8 +1056,14 @@ function genRequestion(concept, lessonDay) {
   const types = ['choice','choice','translate','listen','complete'].filter(t => t !== prevType);
   const newType = pick(types);
 
+  // Guard against invalid lessonDay (e.g. 'Review' session)
+  const dayData = getDayData(lessonDay);
+  if (!dayData) {
+    return { id: nextExId(), type:'translate', prompt:`Traduce al español:`, promptEn:`Translate:`, target: en, answer: es, sourceEs: es, sourceEn: en, isRequestion:true };
+  }
+
   if (newType === 'choice') {
-    const allVocab = getVocabWords(getDayData(lessonDay));
+    const allVocab = getVocabWords(dayData);
     const all = allVocab.length > 4 ? allVocab : getAllPhaseVocab(getPhase(lessonDay));
     const distractors = shuffle(all.filter(w => w.es !== es)).slice(0, 3).map(w => w.es);
     if (distractors.length < 3) {
@@ -600,7 +1080,6 @@ function genRequestion(concept, lessonDay) {
   } else if (newType === 'listen') {
     return { id: nextExId(), type:'listen', prompt:`Escucha y escribe:`, promptEn:`Listen and type:`, answer: es, sourceEs: es, sourceEn: en, isRequestion:true };
   } else if (newType === 'complete') {
-    const dayData = getDayData(lessonDay);
     const items = getExerciseItems(dayData);
     const match = items.find(i => i.es.includes(es));
     if (match) {
@@ -624,10 +1103,29 @@ function showConfirmModal(title, text, confirmLabel, onConfirm) {
       <button class="modal-btn primary" id="modalConfirm">${confirmLabel}</button>
     </div>
   </div>`;
-  document.body.appendChild(overlay);
+  olParent().appendChild(overlay);
   document.getElementById('modalCancel').addEventListener('click', () => overlay.remove());
   document.getElementById('modalConfirm').addEventListener('click', () => { overlay.remove(); onConfirm(); });
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+}
+
+function showHeartlessOverlay() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal-card" style="text-align:center">
+    <div style="font-size:50px;margin-bottom:16px">💔</div>
+    <div class="modal-title">${t('Out of Hearts!','¡Sin vidas!')}</div>
+    <div class="modal-text">${t('You ran out of hearts. Wait for them to refill or come back later.','Te has quedado sin vidas. Espera a que se recarguen o vuelve más tarde.')}</div>
+    <div class="modal-actions">
+      <button class="modal-btn primary" id="heartlessBtn">${t('Back to Path','Volver al camino')}</button>
+    </div>
+  </div>`;
+  olParent().appendChild(overlay);
+  document.getElementById('heartlessBtn')?.addEventListener('click', () => {
+    overlay.remove();
+    lesson = null;
+    render();
+  });
 }
 
 // ===== DISMISS FEEDBACK SHEET =====
@@ -642,8 +1140,9 @@ function dismissFeedbackSheet() {
 // ===== RENDER =====
 function render() {
   const root = document.getElementById('root');
-  if (lesson) { renderQuestion(); return; }
+  if (lesson) { renderQuestion(); applyCompactMode(); return; }
   renderPath(root);
+  applyCompactMode();
 }
 
 // ===== PATH VIEW =====
@@ -652,13 +1151,15 @@ function renderPath(root) {
   const phases = [1,2,3,4,5];
   let html = `<div class="top-bar"><div class="top-inner">
     <div class="stat-group">
-      <div class="stat gold"><span class="stat-icon">🔥</span><span class="stat-num">${state.streak}</span></div>
+      <div class="stat gold"><span class="stat-icon pulse-slow">🔥</span><span class="stat-num">${state.streak}</span></div>
       <div class="stat blue"><span class="stat-icon">💎</span><span class="stat-num">${state.gems}</span></div>
       <div class="stat red"><span class="hearts-display">${Array.from({length:MAX_HEARTS},(_,i)=>`<span class="heart${i<state.hearts?'':' lost'}">❤️</span>`).join('')}</span></div>
     </div>
     <span class="xp-number">${state.xp} XP</span>
     <span class="lang-toggle" id="langToggle">${state.useSpanish?'ES':'EN'}</span>
     <button class="btn-theme" id="themeBtn">${state.darkMode?'☀️':'🌙'}</button>
+    <button class="btn-voice" id="voiceBtn">🔊</button>
+    <button class="btn-compact" id="compactBtn" title="${t('Compact Mode','Modo Compacto')}">${state.compactMode?'🗖':'🗗'}</button>
     <button class="btn-menu" id="menuBtn">☰</button>
   </div></div>
   <div class="path-view">`;
@@ -754,17 +1255,42 @@ function renderPath(root) {
   });
   document.getElementById('menuBtn')?.addEventListener('click', showSideMenu);
   document.getElementById('themeBtn')?.addEventListener('click', () => { state.darkMode = !state.darkMode; saveState(); applyTheme(); render(); });
+  document.getElementById('voiceBtn')?.addEventListener('click', showVoiceSettings);
+  document.getElementById('compactBtn')?.addEventListener('click', toggleCompact);
 }
 
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', state.darkMode ? 'dark' : 'light');
 }
 
+// ===== COMPACT / DRAGGABLE DESKTOP MODE =====
+let _compactDrag = null;
+function applyCompactMode() {
+  const root = document.getElementById('root');
+  if (state.compactMode) {
+    document.documentElement.classList.add('compact-mode');
+    root.style.borderRadius = '0'; // Remove border radius in mini-mode for a cleaner edge
+    root.style.boxShadow = 'none';
+  } else {
+    document.documentElement.classList.remove('compact-mode');
+    root.style.borderRadius = '';
+    root.style.boxShadow = '';
+  }
+}
+function toggleCompact() {
+  state.compactMode = !state.compactMode;
+  if (!state.compactMode) state.compactPos = null;
+  saveState();
+  applyCompactMode();
+  if (document.querySelector('.path-view')) render();
+  else if (lesson) renderQuestion();
+}
 // ===== LESSON FLOW =====
 function startLesson(day) {
   const dayData = getDayData(day);
   if (!dayData) return;
   if (dayData.checkpoint) { startCheckpoint(dayData); return; }
+  if (state.hearts === 0) { showHeartlessOverlay(); return; }
 
   const exercises = generateExercises(dayData);
   if (exercises.length === 0) return;
@@ -779,13 +1305,38 @@ function startLesson(day) {
     answered: false,
     phase: 'active',
     requeue: [],
-    requeueIdx: 0
+    requeueIdx: 0,
+    combo: 0
   };
   render();
+  if (dayData.intro || dayData.grammar) {
+    showMicroLesson(dayData);
+  }
+}
+
+// ===== MICRO-LESSON TIP OVERLAY =====
+function showMicroLesson(dayData) {
   renderQuestion();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="micro-card">
+    <div class="micro-badge">${t('Before you start...','Antes de empezar...')}</div>
+    <div class="micro-title">${t(dayData.title, dayData.title)}</div>
+    <div class="micro-body">${dayData.intro || dayData.grammar}</div>
+    <button class="micro-btn" id="microDismissBtn">${t("Let's go!","\u00a1Vamos!")}</button>
+  </div>`;
+  olParent().appendChild(overlay);
+  document.getElementById('microDismissBtn').addEventListener('click', () => {
+    playSFX('click');
+    overlay.remove();
+  });
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) overlay.remove();
+  });
 }
 
 function renderQuestion() {
+  refillHearts();
   const root = document.getElementById('root');
   const ex = lesson.exercises[lesson.currentIdx];
   if (!ex) { finishLesson(); return; }
@@ -801,18 +1352,21 @@ function renderQuestion() {
 
   let html = `<div class="top-bar"><div class="top-inner">
     <div class="stat-group">
-      <div class="stat gold"><span class="stat-icon">🔥</span><span class="stat-num">${state.streak}</span></div>
+      <div class="stat gold"><span class="stat-icon pulse-slow">🔥</span><span class="stat-num">${state.streak}</span></div>
       <div class="stat blue"><span style="font-size:15px;font-weight:700;color:#fff">+${lesson.xpEarned} XP</span></div>
+      ${lesson.combo >= 3 ? `<div class="stat" style="background:var(--gold);padding:2px 8px;border-radius:12px;font-size:13px;font-weight:700;color:#1a1a2e">🔥 ×${lesson.combo}</div>` : ''}
       <div class="stat red"><span class="hearts-display">${Array.from({length:MAX_HEARTS},(_,i)=>`<span class="heart${i<state.hearts?'':' lost'}">❤️</span>`).join('')}</span></div>
     </div>
     <span class="lang-toggle" id="langToggle">${state.useSpanish?'ES':'EN'}</span>
     <button class="btn-theme" id="themeBtn">${state.darkMode?'☀️':'🌙'}</button>
-    <button class="btn-leave" onclick="leaveLesson()">✕</button>
+    <button class="btn-voice" id="voiceBtn">🔊</button>
+    <button class="btn-compact" id="compactBtn" title="${t('Compact Mode','Modo Compacto')}">${state.compactMode?'🗖':'🗗'}</button>
+    <button class="btn-leave" onclick="leaveLesson()">${t('Continue learning','Continuar aprendiendo')}</button>
   </div></div>
   <div class="lesson-view">
     <div class="lesson-progress">${progDots}</div>
     ${lesson.phase === 'review' ? `<div style="text-align:center;font-size:13px;font-weight:700;color:var(--gold);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">${t('Review Mistakes','Repasar Errores')}</div>` : ''}
-    <div class="exercise-card" id="exCard">`;
+    <div class="exercise-card spring-in" id="exCard">`;
 
   if (ex.type === 'choice') {
     html += `<div class="exercise-prompt">${t(ex.stemEn, ex.stem)}</div>
@@ -826,19 +1380,25 @@ function renderQuestion() {
       <div class="exercise-target">“${ex.target}”</div>
       <div class="translate-wrap">
         <input class="translate-input" id="transInput" placeholder="${t('Write in Spanish...', 'Escribe en español...')}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      </div>`;
+      </div>
+      <div class="hint-wrap"><button class="btn-hint" id="hintBtn">💡 ${t('Hint','Pista')}</button></div>
+      ${renderWordBank(ex)}`;
   } else if (ex.type === 'complete') {
     html += `<div class="exercise-prompt">${t(ex.promptEn, ex.prompt)}</div>
       <div class="exercise-target">${ex.sentence}</div>
       <div class="translate-wrap">
         <input class="translate-input" id="transInput" placeholder="${t('Type the word...', 'Escribe la palabra...')}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      </div>`;
+      </div>
+      <div class="hint-wrap"><button class="btn-hint" id="hintBtn">💡 ${t('Hint','Pista')}</button></div>
+      ${renderWordBank(ex)}`;
   } else if (ex.type === 'listen') {
     html += `<div class="exercise-prompt">${t(ex.promptEn, ex.prompt)}</div>
       <button class="speaker-btn" id="speakerBtn">🔊</button>
       <div class="translate-wrap">
         <input class="translate-input" id="transInput" placeholder="${t('Type what you hear...', 'Escribe lo que oyes...')}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      </div>`;
+      </div>
+      <div class="hint-wrap"><button class="btn-hint" id="hintBtn">💡 ${t('Hint','Pista')}</button></div>
+      ${renderWordBank(ex)}`;
   } else if (ex.type === 'match') {
     html += `<div class="exercise-prompt">${t(ex.promptEn, ex.prompt)}</div>
       <div class="match-grid" id="matchGrid">
@@ -869,6 +1429,23 @@ function renderQuestion() {
       });
     });
   }
+
+  // Word bank chip clicks: insert word at cursor in input
+  document.querySelectorAll('.word-bank-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      playSFX('click');
+      const input = document.getElementById('transInput');
+      if (!input) return;
+      const word = chip.dataset.word + ' ';
+      const s = input.selectionStart || input.value.length;
+      const before = input.value.slice(0, s);
+      const after = input.value.slice(input.selectionEnd || s);
+      input.value = before + word + after;
+      input.focus();
+      const newPos = s + word.length;
+      input.selectionStart = input.selectionEnd = newPos;
+    });
+  });
 
   // Bind events
   if (ex.type === 'choice') {
@@ -912,8 +1489,10 @@ function renderQuestion() {
           });
           matchState.selectedLeft = null;
           if (matchState.matched.size === ex.pairs.length) {
+            lesson.combo = (lesson.combo || 0) + 1;
             lesson.xpEarned += XP_PER_CORRECT;
             addXp(XP_PER_CORRECT);
+            trackCorrect(ex);
             lesson.answered = true;
             document.querySelectorAll('.match-item-left, .match-item-right').forEach(e => e.style.pointerEvents = 'none');
             showCorrectFeedback(ex);
@@ -922,6 +1501,7 @@ function renderQuestion() {
           matchState.errors++;
           loseHeart();
           lesson.heartsLost++;
+          trackWrong(ex);
           playSFX('matchWrong');
           document.querySelectorAll(`.match-item-left[data-pair="${leftPair}"]`).forEach(e => {
             e.classList.add('wrong'); setTimeout(() => e.classList.remove('wrong'), 350);
@@ -946,14 +1526,23 @@ function renderQuestion() {
   }
 
   // Keyboard shortcuts
+  if (window._currentKeyHandler) document.removeEventListener('keydown', window._currentKeyHandler);
   const keyHandler = (e) => {
+    if (e.key === 'Enter' && lesson.answered) {
+      const contBtn = document.getElementById('continueCorrectBtn') || document.getElementById('continueWrongBtn');
+      if (contBtn) contBtn.click();
+      return;
+    }
     if (ex.type === 'choice' && !lesson.answered) {
-      const n = parseInt(e.key);
-      if (n >= 1 && n <= 4) { const btn = document.querySelector(`.choice-btn:nth-child(${n})`); if (btn) btn.click(); }
+      if (e.key >= '1' && e.key <= '4') {
+        const n = parseInt(e.key);
+        const btn = document.querySelector(`.choice-btn:nth-child(${n})`);
+        if (btn) { btn.click(); e.preventDefault(); }
+      }
     }
   };
+  window._currentKeyHandler = keyHandler;
   document.addEventListener('keydown', keyHandler);
-  setTimeout(() => document.removeEventListener('keydown', keyHandler), 5000);
 
   document.getElementById('langToggle')?.addEventListener('click', () => {
     const input = document.getElementById('transInput');
@@ -964,6 +1553,8 @@ function renderQuestion() {
     setTimeout(() => { const inp = document.getElementById('transInput'); if (inp && savedVal) inp.value = savedVal; }, 0);
   });
   document.getElementById('themeBtn')?.addEventListener('click', () => { state.darkMode = !state.darkMode; saveState(); applyTheme(); renderQuestion(); });
+  document.getElementById('voiceBtn')?.addEventListener('click', () => { showVoiceSettings(); });
+  document.getElementById('compactBtn')?.addEventListener('click', toggleCompact);
 }
 
 // ===== CHECK ANSWERS =====
@@ -979,9 +1570,10 @@ function checkAnswer(userAnswer) {
     correct = normalize(userAnswer) === normalize(ex.answer);
   }
 
-  lesson.answered = true;
+    lesson.answered = true;
 
   if (correct) {
+    lesson.combo = (lesson.combo || 0) + 1;
     lesson.xpEarned += XP_PER_CORRECT;
     addXp(XP_PER_CORRECT);
     trackCorrect(ex);
@@ -990,7 +1582,12 @@ function checkAnswer(userAnswer) {
     const audioText = ex.answer || ex.sourceEs || '';
     if (audioText && ex.type !== 'listen') setTimeout(() => speak(audioText, 0.8), 300);
   } else {
+    lesson.combo = 0;
     loseHeart();
+    if (state.hearts === 0) {
+      showHeartlessOverlay();
+      return;
+    }
     lesson.heartsLost++;
     trackWrong(ex);
     playSFX('incorrect');
@@ -1010,13 +1607,14 @@ function showCorrectFeedback(ex) {
     <div class="feedback-sheet-body">
       <div class="feedback-sheet-icon">✓</div>
       <div class="feedback-sheet-title">${t('Correct! +' ,'\u00a1Correcto! +')}${XP_PER_CORRECT} XP</div>
+      ${lesson.combo > 1 ? `<div style="text-align:center;font-size:14px;font-weight:600;color:var(--gold);margin-top:-6px">🔥 ${lesson.combo} ${t('in a row!','¡seguidos!')}</div>` : ''}
       <div class="feedback-sheet-actions">
         <button class="feedback-sheet-btn secondary" id="explainCorrectBtn">❓ ${t('Explain','Explicar')}</button>
         <button class="feedback-sheet-btn primary" id="continueCorrectBtn">${t('Continue','Continuar')}</button>
       </div>
     </div>
     <div id="explainCorrectArea" style="display:none"></div>`;
-  document.body.appendChild(sheet);
+  olParent().appendChild(sheet);
 
   // Mark choice buttons
   if (ex.type === 'choice') {
@@ -1062,7 +1660,7 @@ function showIncorrectFeedback(ex, userAnswer) {
       </div>
     </div>
     <div id="explainWrongArea" style="display:none"></div>`;
-  document.body.appendChild(sheet);
+  olParent().appendChild(sheet);
 
   if (ex.type === 'choice') {
     document.querySelectorAll('.choice-btn').forEach((btn, i) => {
@@ -1114,84 +1712,161 @@ function openExplain(ex, containerId) {
   const info = getConceptInfo(wordEs, wordEn);
   const isVerb = info.type === 'verbo' || info.type === 'Verb';
 
-  // Build explanation
-  let explanation = '';
-  if (isVerb) {
-    explanation = `"<b>${wordEs}</b>" means "<b>${wordEn}</b>" in Spanish. It is a ${info.verbType} ${info.typeLabel.toLowerCase()}. ${info.notes}`;
-  } else if (info.gender) {
-    explanation = `"<b>${wordEs}</b>" means "<b>${wordEn}</b>" in Spanish. It is a ${info.gender} ${info.typeLabel.toLowerCase()}. ${info.notes || ''}`;
-  } else {
-    explanation = `"<b>${wordEs}</b>" means "<b>${wordEn}</b>" in Spanish. ${info.notes ? info.notes : 'It is a ' + info.typeLabel.toLowerCase() + '.'}`;
-  }
+  // ——— Word Type Icon/Color ———
+  const typeMeta = {
+    verb:      { icon:'📝', label: t('Verb','Verbo') },
+    noun:      { icon:'📦', label: t('Noun','Sustantivo') },
+    adj:       { icon:'🎨', label: t('Adjective','Adjetivo') },
+    article:   { icon:'🔤', label: t('Article','Artículo') },
+    adverb:    { icon:'➡️', label: t('Adverb','Adverbio') },
+    prep:      { icon:'📍', label: t('Preposition','Preposición') },
+    pronoun:   { icon:'👤', label: t('Pronoun','Pronombre') },
+    expr:      { icon:'💬', label: t('Expression','Expresión') },
+    greeting:  { icon:'👋', label: t('Greeting','Saludo') },
+    farewell:  { icon:'🚶', label: t('Farewell','Despedida') },
+    negation:  { icon:'🚫', label: t('Negation','Negación') },
+    quest:     { icon:'❓', label: t('Question word','Palabra interrogativa') },
+    other:     { icon:'📖', label: t('Vocabulary','Vocabulario') }
+  };
 
-  // Build conjugation table HTML for verbs
+  function getTypeMeta(typeLabel) {
+    const lower = (typeLabel || '').toLowerCase();
+    if (isVerb || lower.includes('verb')) return typeMeta.verb;
+    if (lower.includes('noun') || lower.includes('sustantivo')) return typeMeta.noun;
+    if (lower.includes('adjective') || lower.includes('adjetivo')) return typeMeta.adj;
+    if (lower.includes('article') || lower.includes('artículo')) return typeMeta.article;
+    if (lower.includes('adverb')) return typeMeta.adverb;
+    if (lower.includes('preposition') || lower.includes('preposición')) return typeMeta.prep;
+    if (lower.includes('pronoun') || lower.includes('pronombre')) return typeMeta.pronoun;
+    if (lower.includes('expression') || lower.includes('expresión')) return typeMeta.expr;
+    if (lower.includes('greeting') || lower.includes('saludo')) return typeMeta.greeting;
+    if (lower.includes('farewell') || lower.includes('despedida')) return typeMeta.farewell;
+    if (lower.includes('negation') || lower.includes('negación') || lower.includes('negative')) return typeMeta.negation;
+    if (lower.includes('question') || lower.includes('interrogativa')) return typeMeta.quest;
+    return typeMeta.other;
+  }
+  const tm = getTypeMeta(info.typeLabel);
+
+  // ——— Word Identity Card ———
+  const wordCard = `
+    <div class="xp-word-card">
+      <div class="xp-word-main">
+        <div class="xp-word-es">${wordEs}</div>
+        <div class="xp-word-en">${wordEn}</div>
+        <button class="xp-word-listen" id="xpListenBtn" title="${t('Listen','Escuchar')}">🔊</button>
+      </div>
+      <div class="xp-word-type"><span class="xp-badge">${tm.icon} ${tm.label}</span>
+        ${info.verbType ? `<span class="xp-badge xp-badge-sub">${info.verbType}</span>` : ''}
+        ${info.gender ? `<span class="xp-badge xp-badge-sub">${info.gender}</span>` : ''}
+      </div>
+    </div>`;
+
+  // ——— Grammar Notes ———
+  const notesHtml = info.notes
+    ? `<div class="xp-section"><div class="xp-section-title">📖 ${t('Notes','Notas')}</div><div class="xp-notes">${info.notes}</div></div>`
+    : '';
+
+  // ——— Related Forms ———
+  const formsHtml = (info.relatedForms && info.relatedForms.length > 1)
+    ? `<div class="xp-section"><div class="xp-section-title">🔗 ${t('Forms','Formas')}</div>
+        <div class="xp-forms">${info.relatedForms.map(f => `<span class="xp-form-chip">${f}</span>`).join('')}</div></div>`
+    : '';
+
+  // ——— Conjugation Table for Regular Verbs ———
   let conjHtml = '';
   if (isVerb && info.conjugationDetails && info.conjugationDetails.length) {
-    conjHtml = `<div class="conj-section">
-      <div class="conj-header">${t('Conjugations','Conjugaciones')}</div>`;
+    conjHtml = `<div class="xp-section"><div class="xp-section-title">📋 ${t('Conjugation','Conjugación')}</div>
+      <div class="xp-conj-grid">`;
     info.conjugationDetails.forEach(d => {
-      conjHtml += `<div class="conj-row">
-        <div class="conj-row-header">
-          <span class="conj-subject">${d.subject}</span>
-          <span class="conj-form">${d.form}</span>
-          <span class="conj-en">— ${d.translation}</span>
-        </div>`;
-      d.examples.forEach(ex => {
-        conjHtml += `<div class="conj-example">
-          <div class="conj-example-es">${ex.es}</div>
-          <div class="conj-example-en">${ex.en}</div>
-        </div>`;
-      });
-      conjHtml += `</div>`;
+      conjHtml += `<div class="xp-conj-row">
+        <span class="xp-conj-subj">${d.subject}</span>
+        <span class="xp-conj-form">${d.form}</span>
+        <span class="xp-conj-en">${d.translation}</span>
+      </div>`;
     });
-    conjHtml += `</div>`;
+    conjHtml += `</div></div>`;
   }
 
-  // Bilingual examples list
-  const bex = (info.bilingualExamples || []).filter(e => !e.es.includes(ex.answer || '___')).slice(0, 4);
-  const hasBex = bex.length > 0;
+  // ——— Examples (always visible) ———
+  const ansWord = (ex.answer || '___').trim();
+  const bex = (info.bilingualExamples || []).filter(e => {
+    if (ansWord === '___') return true;
+    const esc = ansWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    return !new RegExp('\\b' + esc + '\\b', 'i').test(e.es);
+  }).slice(0, 4);
+  const examplesHtml = bex.length > 0
+    ? `<div class="xp-section"><div class="xp-section-title">💡 ${t('Examples','Ejemplos')}</div>
+        ${bex.map(e => `<div class="xp-example-row"><span class="xp-example-es">${e.es}</span><span class="xp-example-en">${e.en}</span></div>`).join('')}</div>`
+    : '';
 
+  // ——— Common Mistakes Tip (context-aware) ———
+  let tipsHtml = '';
+  const tipData = {
+    'unos': t('Use "unos" with masculine plural nouns (unos libros). For feminine plural, use "unas".', 'Usa "unos" con sustantivos masculinos plurales (unos libros). Para femenino plural, usa "unas".'),
+    'unas': t('Use "unas" with feminine plural nouns (unas casas). For masculine plural, use "unos".', 'Usa "unas" con sustantivos femeninos plurales (unas casas). Para masculino plural, usa "unos".'),
+    'ser': t('Ser is for permanent traits ( Soy alto). For temporary states, use estar (Estoy cansado).', 'Ser es para características permanentes (Soy alto). Para estados temporales, usa estar (Estoy cansado).'),
+    'estar': t('Estar is for temporary states and location (Estoy en casa). For permanent traits, use ser (Soy médico).', 'Estar es para estados temporales y ubicación (Estoy en casa). Para rasgos permanentes, usa ser (Soy médico).'),
+    'tener': t('Tener is irregular: tengo, tienes, tiene, tenemos, tenéis, tienen.', 'Tener es irregular: tengo, tienes, tiene, tenemos, tenéis, tienen.'),
+    'ir': t('Ir is very irregular: voy, vas, va, vamos, vais, van.', 'Ir es muy irregular: voy, vas, va, vamos, vais, van.'),
+    'gustar': t('Gustar uses indirect object pronouns: me gusta, te gusta, le gusta, nos gusta, les gusta.', 'Gustar usa pronombres de objeto indirecto: me gusta, te gusta, le gusta, nos gusta, les gusta.'),
+    'hay': t('Hay means "there is" or "there are" — it is the same for singular and plural.', 'Hay significa "there is" o "there are" — es igual para singular y plural.'),
+    'no': t('Place "no" directly before the conjugated verb: No hablo inglés.', 'Coloca "no" directamente antes del verbo conjugado: No hablo inglés.'),
+    'mucho': t('Mucho changes to match gender: mucho trabajo (m), mucha agua (f), muchos amigos (pl), muchas gracias (f pl).', 'Mucho cambia según el género: mucho trabajo (m), mucha agua (f), muchos amigos (pl), muchas gracias (f pl).'),
+    'bueno': t('Bueno shortens to "buen" before masculine singular nouns: un buen amigo.', 'Bueno se acorta a "buen" antes de sustantivos masculinos singulares: un buen amigo.'),
+    'grande': t('Grande shortens to "gran" before singular nouns: una gran idea.', 'Grande se acorta a "gran" antes de sustantivos singulares: una gran idea.'),
+    'primero': t('Primero shortens to "primer" before masculine singular nouns: el primer libro.', 'Primero se acorta a "primer" antes de sustantivos masculinos singulares: el primer libro.'),
+    'ninguno': t('Ninguno shortens to "ningún" before masculine singular nouns: ningún libro.', 'Ninguno se acorta a "ningún" antes de sustantivos masculinos singulares: ningún libro.'),
+  };
+  const tip = tipData[info.word?.toLowerCase()] || tipData[normEs];
+  if (tip) {
+    tipsHtml = `<div class="xp-section xp-tip"><div class="xp-section-title">⚠️ ${t('Tip','Consejo')}</div><div class="xp-notes">${tip}</div></div>`;
+  }
+
+  // Check if word has an accent difference (common spelling pitfalls)
+  const accentNote = getAccentNote(wordEs);
+  const accentHtml = accentNote
+    ? `<div class="xp-section xp-tip"><div class="xp-section-title">✏️ ${t('Spelling','Ortografía')}</div><div class="xp-notes">${accentNote}</div></div>`
+    : '';
+
+  // ——— Render ———
   container.style.display = 'block';
-  container.innerHTML = `<div class="feedback-sheet-chat" id="explainChat">
-    <div class="chat-message duo-message">
-      <div class="chat-avatar">🦉</div>
-      <div class="chat-bubble">${explanation}</div>
-    </div>
+  container.innerHTML = `<div class="xp-explain-wrap">
+    ${wordCard}
+    ${notesHtml}
+    ${formsHtml}
     ${conjHtml}
-    <div class="chat-actions" id="explainActions">
-      ${hasBex ? `<button class="chat-btn secondary" id="exampleBtn">${t('Show me an example','Muéstrame un ejemplo')}</button>` : ''}
-      <button class="chat-btn primary" id="gotItBtn">${t('Got it','Entendido')}</button>
+    ${examplesHtml}
+    ${accentHtml}
+    ${tipsHtml}
+    <div class="xp-actions">
+      <button class="xp-btn xp-btn-primary" id="xpGotItBtn">✓ ${t('Got it','Entendido')}</button>
+      <button class="xp-btn xp-btn-speak" id="xpSpeakBtn">🔊 ${t('Listen','Escuchar')}</button>
     </div>
-    <div id="examplesArea" style="display:none"></div>
   </div>`;
 
-  document.getElementById('gotItBtn')?.addEventListener('click', () => {
+  // ——— Events ———
+  document.getElementById('xpGotItBtn')?.addEventListener('click', () => {
     playSFX('click');
     container.style.display = 'none';
   });
 
-  document.getElementById('exampleBtn')?.addEventListener('click', () => {
-    playSFX('click');
-    const examplesArea = document.getElementById('examplesArea');
-    if (!examplesArea) return;
+  document.getElementById('xpSpeakBtn')?.addEventListener('click', () => speak(wordEs, 0.82));
+}
 
-    const examplesHtml = bex.map(e => `<div class="example-line-bil">
-      <span class="example-es">${e.es}</span>
-      <span class="example-en">${e.en}</span>
-    </div>`).join('');
-
-    examplesArea.style.display = 'block';
-    examplesArea.innerHTML = `<div class="chat-message duo-message" style="margin-top:12px">
-      <div class="chat-avatar">🦉</div>
-      <div class="chat-bubble">${t('Here are some examples:','Aquí tienes algunos ejemplos:')}${examplesHtml}</div>
-    </div>`;
-
-    const actions = document.getElementById('explainActions');
-    if (actions) {
-      const btn = document.getElementById('exampleBtn');
-      if (btn) btn.disabled = true;
-    }
-  });
+// ——— Accent/Spelling Helper ———
+function getAccentNote(word) {
+  const accents = {
+    'como': t('"Cómo" has an accent when asking a question. "Como" (no accent) means "like/as".', '"Cómo" lleva tilde en preguntas. "Como" (sin tilde) significa "like/as".'),
+    'donde': t('"Dónde" has an accent when asking a question. "Donde" (no accent) means "where" in relative clauses.', '"Dónde" lleva tilde en preguntas. "Donde" (sin tilde) se usa en oraciones relativas.'),
+    'que': t('"Qué" has an accent when asking a question or exclaiming. "Que" (no accent) means "that".', '"Qué" lleva tilde en preguntas o exclamaciones. "Que" (sin tilde) significa "that".'),
+    'quien': t('"Quién" has an accent when asking a question. "Quien" (no accent) is used in relative clauses.', '"Quién" lleva tilde en preguntas. "Quien" (sin tilde) se usa en cláusulas relativas.'),
+    'si': t('"Sí" has an accent when it means "yes" or "himself/herself". "Si" (no accent) means "if".', '"Sí" lleva tilde cuando significa "yes" o "sí mismo". "Si" (sin tilde) significa "if".'),
+    'tu': t('"Tú" has an accent when it means "you". "Tu" (no accent) means "your".', '"Tú" lleva tilde cuando significa "you". "Tu" (sin tilde) significa "your".'),
+    'el': t('"Él" has an accent when it means "he". "El" (no accent) means "the".', '"Él" lleva tilde cuando significa "he". "El" (sin tilde) es el artículo.'),
+    'mas': t('"Más" has an accent when it means "more". "Mas" (no accent) means "but".', '"Más" lleva tilde cuando significa "more". "Mas" (sin tilde) significa "but".'),
+    'se': t('"Sé" has an accent when it means "I know" (from saber). "Se" (no accent) is a reflexive pronoun.', '"Sé" lleva tilde cuando significa "I know" (de saber). "Se" (sin tilde) es un pronombre reflexivo.'),
+  };
+  return accents[word ? word.toLowerCase() : ''] || null;
 }
 
 // ===== NEXT QUESTION / END-OF-LESSON REVIEW =====
@@ -1219,28 +1894,33 @@ function nextQuestion() {
 
 function finishLesson() {
   const root = document.getElementById('root');
-  const isNew = !isCompleted(lesson.dayData.day);
+  const isReview = lesson.dayData.day === 'Review' || lesson.dayData.day === 'Quick';
+  const isNew = !isReview && !isCompleted(lesson.dayData.day);
+  
   if (isNew) {
     state.completed.push(lesson.dayData.day);
-    updateStreak();
     state.gems += 5;
     addXp(XP_LESSON_BONUS);
-    saveState();
   }
+  updateStreak();
+  saveState();
 
-  if (lesson.heartsLost === 0 && lesson.xpEarned > 0 && isNew) {
+  if (lesson.heartsLost === 0 && lesson.xpEarned > 0) {
+    state.perfectLessons = (state.perfectLessons || 0) + 1;
     if (!state.badges.includes('perfect_lesson')) { state.badges.push('perfect_lesson'); saveState(); showToast('🏆 ' + badgeLabel(ALL_BADGES.find(b => b.id === 'perfect_lesson'))); }
   }
-  if (lesson.dayData.checkpoint) {
+  if (!isReview && lesson.dayData.checkpoint && isNew) {
     if (!state.badges.includes('checkpoint')) { state.badges.push('checkpoint'); saveState(); showToast('🏆 ' + badgeLabel(ALL_BADGES.find(b => b.id === 'checkpoint'))); }
   }
   checkBadges();
   updateQuestProgress();
 
   const esc = lesson.failedThisLesson || [];
-  esc.forEach(es => scheduleReview(lesson.dayData.day, es));
+  if (!isReview) {
+    esc.forEach(es => scheduleReview(lesson.dayData.day, es));
+  }
 
-  if (lesson.dayData.checkpoint) playSFX('checkpoint');
+  if (!isReview && lesson.dayData.checkpoint) playSFX('checkpoint');
   else if (lesson.heartsLost === 0 && isNew) playSFX('levelUp');
   else playSFX('correct');
 
@@ -1249,17 +1929,18 @@ function finishLesson() {
   overlay.innerHTML = `<div class="complete-content">
     <div class="complete-emoji">🎉</div>
     <div class="complete-title">${t('Well done!','\u00a1Bien hecho!')}</div>
-    <div class="complete-day">${lesson.dayData.title}</div>
+    <div class="complete-day">${isReview ? (lesson.dayData.title || t('Practice Session','Sesión de Práctica')) : lesson.dayData.title}</div>
     ${esc.length > 0 ? `<div style="font-size:14px;color:var(--text2);margin-bottom:20px;font-weight:600">${t('Words to practice:','Palabras para practicar:')} ${esc.slice(0,3).join(', ')}${esc.length > 3 ? '...' : ''}</div>` : ''}
     <div class="complete-stats">
-      <div class="complete-stat"><div class="complete-stat-num gold">+${lesson.xpEarned + XP_LESSON_BONUS}</div><div class="complete-stat-label">XP</div></div>
+      <div class="complete-stat"><div class="complete-stat-num gold">+${lesson.xpEarned + (isNew ? XP_LESSON_BONUS : 0)}</div><div class="complete-stat-label">XP</div></div>
       <div class="complete-stat"><div class="complete-stat-num red">${lesson.heartsLost}</div><div class="complete-stat-label">${t('Mistakes','Fallos')}</div></div>
       <div class="complete-stat"><div class="complete-stat-num green">${state.streak}</div><div class="complete-stat-label">${t('Streak','Racha')} 🔥</div></div>
     </div>
     <button class="continue-btn" id="pathBtn">${t('Continue','Continuar')}</button>
   </div>`;
 
-  document.body.appendChild(overlay);
+  olParent().appendChild(overlay);
+  celebrate(2000);
   document.getElementById('pathBtn')?.addEventListener('click', () => {
     playSFX('click');
     overlay.remove();
@@ -1290,7 +1971,7 @@ function startCheckpoint(dayData) {
   const root = document.getElementById('root');
   root.innerHTML = `<div class="top-bar"><div class="top-inner">
     <div class="stat-group">
-      <div class="stat gold"><span class="stat-icon">🔥</span><span class="stat-num">${state.streak}</span></div>
+      <div class="stat gold"><span class="stat-icon pulse-slow">🔥</span><span class="stat-num">${state.streak}</span></div>
       <div class="stat blue"><span class="stat-icon">💎</span><span class="stat-num">${state.gems}</span></div>
     </div>
     <button style="background:none;border:none;font-size:20px;cursor:pointer;padding:4px;color:#fff" onclick="render()">✕</button>
@@ -1375,7 +2056,7 @@ function showToast(msg) {
   const el = document.createElement('div');
   el.textContent = msg;
   el.className = 'toast';
-  document.body.appendChild(el);
+  olParent().appendChild(el);
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 300); }, 2200);
 }
 
@@ -1390,10 +2071,13 @@ function showSideMenu() {
   const items = [
     { icon:'📖', labelEn:'Flashcards', labelEs:'Tarjetas', action:'flashcards' },
     { icon:'🔁', labelEn:'Weak Words', labelEs:'Palabras Débiles', count:weakCount, action:'weak' },
+    { icon:'🕒', labelEn:'Review', labelEs:'Repasar', count:dueCount, action:'review' },
+    { icon:'⚡', labelEn:'Quick Practice', labelEs:'Práctica Rápida', action:'quick' },
     { icon:'📕', labelEn:'Vocabulary', labelEs:'Vocabulario', action:'vocab' },
     { icon:'📊', labelEn:'Stats', labelEs:'Estadísticas', action:'stats' },
     { icon:'🏆', labelEn:'Badges', labelEs:'Insignias', badgeCount:state.badges.length, action:'badges' },
     { icon:'🎯', labelEn:'Daily Quests', labelEs:'Misiones', action:'quests' },
+    { icon:'🔊', labelEn:'Voice', labelEs:'Voz', action:'voice' },
     { icon:'💾', labelEn:'Export Progress', labelEs:'Exportar', action:'export' },
     { icon:'📂', labelEn:'Import Progress', labelEs:'Importar', action:'import' },
   ];
@@ -1408,17 +2092,20 @@ function showSideMenu() {
     <div style="margin-top:12px;border-top:1px solid rgba(255,255,255,.08);padding-top:12px"><button class="understand-btn" id="closeMenuBtn">${t('Close','Cerrar')}</button></div>
   </div>`;
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  document.body.appendChild(overlay);
+  olParent().appendChild(overlay);
   overlay.querySelectorAll('.menu-item').forEach(el => {
     el.addEventListener('click', () => {
       overlay.remove();
       const a = el.dataset.action;
       if (a === 'flashcards') showFlashcards();
       else if (a === 'weak') showWeakWords();
+      else if (a === 'review') showReviewSession();
+      else if (a === 'quick') startQuickPractice();
       else if (a === 'vocab') showVocabBrowser();
       else if (a === 'stats') showStats();
       else if (a === 'badges') showBadges();
       else if (a === 'quests') showDailyQuests();
+      else if (a === 'voice') showVoiceSettings();
       else if (a === 'export') exportProgress();
       else if (a === 'import') importProgress();
     });
@@ -1436,7 +2123,8 @@ function showFlashcards() {
   function renderFC() {
     const w = shuffled[idx] || shuffled[0];
     if (!w) return;
-    root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Flashcards','Tarjetas')}</div><button class="btn-leave" onclick="render()">✕</button></div></div>
+    const phase = getPhaseForWord(w.es);
+    root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Flashcards','Tarjetas')}</div><button class="btn-close" onclick="render()">✕</button></div></div>
       <div class="flashcard-container">
         <div class="flashcard" id="fcCard">
           <div class="front" ${flipped?'style="display:none"':''}>
@@ -1445,8 +2133,11 @@ function showFlashcards() {
           </div>
           <div class="back" ${flipped?'':'style="display:none"'}>
             <div class="translation">${w.en}</div>
-            <div class="extra">${t('Type','Tipo')}: ${w.type || t('vocabulary','vocabulario')}</div>
+            <div class="extra">${phase ? `Phase ${phase} · ` : ''}${w.type || t('vocabulary','vocabulario')}</div>
           </div>
+        </div>
+        <div style="text-align:center;margin-bottom:8px">
+          <button class="speaker-btn" id="fcSpeakBtn">🔊</button>
         </div>
         <div class="flashcard-nav">
           <button class="fc-prev" id="fcPrev">◀</button>
@@ -1458,29 +2149,123 @@ function showFlashcards() {
     document.getElementById('fcCard')?.addEventListener('click', () => { flipped = !flipped; renderFC(); });
     document.getElementById('fcPrev')?.addEventListener('click', () => { if (idx > 0) { idx--; flipped = false; renderFC(); } });
     document.getElementById('fcNext')?.addEventListener('click', () => { if (idx < shuffled.length - 1) { idx++; flipped = false; renderFC(); } });
+    document.getElementById('fcSpeakBtn')?.addEventListener('click', () => speak(w.es, 0.82));
     document.getElementById('fcKnown')?.addEventListener('click', () => {
       if (!state.failedConcepts.find(c => c.es === w.es)) { state.totalCorrect++; state.wordsLearned++; }
       saveState();
       if (idx < shuffled.length - 1) { idx++; flipped = false; renderFC(); } else showToast(t('All done!','¡Completado!'));
     });
+    // Keyboard navigation
+    const keyHandler = (e) => {
+      if (e.key === 'ArrowLeft' && idx > 0) { idx--; flipped = false; renderFC(); document.removeEventListener('keydown', keyHandler); }
+      else if (e.key === 'ArrowRight' && idx < shuffled.length - 1) { idx++; flipped = false; renderFC(); document.removeEventListener('keydown', keyHandler); }
+      else if (e.key === ' ' || e.key === 'Enter') { flipped = !flipped; renderFC(); document.removeEventListener('keydown', keyHandler); }
+    };
+    document.addEventListener('keydown', keyHandler);
   }
   renderFC();
+}
+
+function getPhaseForWord(es) {
+  for (let p = 1; p <= 5; p++) {
+    const vocab = getAllPhaseVocab(p);
+    if (vocab.some(v => v.es === es)) return p;
+  }
+  return null;
 }
 
 // ===== WEAK WORDS =====
 function showWeakWords() {
   const root = document.getElementById('root');
   const weak = state.failedConcepts;
-  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Weak Words','Palabras Débiles')}</div><button class="btn-leave" onclick="render()">✕</button></div></div>
-    ${weak.length === 0 ? `<div style="text-align:center;padding:40px;color:var(--text2)">${t('No weak words! Keep it up!','¡Sin palabras débiles! ¡Sigue así!')}</div>` : `<div class="weak-list">${weak.map(w => `<div class="weak-item"><span class="weak-es">${w.es}</span><span class="weak-en">${w.en}</span><span class="weak-count">${w.count||1}</span></div>`).join('')}</div>`}
-    <div style="text-align:center;padding:12px"><button class="reset-btn" onclick="render()">${t('Back','Volver')}</button></div>`;
+  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Weak Words','Palabras Débiles')}</div><button class="btn-close" onclick="render()">✕</button></div></div>`;
+  if (weak.length === 0) {
+    root.innerHTML += `<div style="text-align:center;padding:40px;color:var(--text2)">${t('No weak words! Keep it up!','¡Sin palabras débiles! ¡Sigue así!')}</div>`;
+  } else {
+    const list = document.createElement('div');
+    list.className = 'weak-list';
+    weak.forEach(w => {
+      const item = document.createElement('div');
+      item.className = 'weak-item';
+      const es = document.createElement('span');
+      es.className = 'weak-es';
+      es.textContent = w.es || '';
+      const en = document.createElement('span');
+      en.className = 'weak-en';
+      en.textContent = w.en || '';
+      const count = document.createElement('span');
+      count.className = 'weak-count';
+      count.textContent = String(w.count || 1);
+      item.appendChild(es); item.appendChild(en); item.appendChild(count);
+      list.appendChild(item);
+    });
+    root.appendChild(list);
+  }
+  const back = document.createElement('div');
+  back.style.cssText = 'text-align:center;padding:12px';
+  const backBtn = document.createElement('button');
+  backBtn.className = 'reset-btn';
+  backBtn.textContent = t('Back','Volver');
+  backBtn.onclick = render;
+  back.appendChild(backBtn);
+  root.appendChild(back);
+}
+
+function showReviewSession() {
+  const due = getDueReviews();
+  if (due.length === 0) {
+    showToast(t('No reviews due! You are all caught up.','¡No hay repasos pendientes! Estás al día.'));
+    return;
+  }
+  const syntheticDay = {
+    day: 'Review', phase: 1, vocab: { words: due }, exercises: [], checkpoint: false
+  };
+  const exercises = [];
+  due.forEach((word, i) => {
+    let ex = null;
+    const typeIdx = i % 4;
+    if (typeIdx === 0) ex = genChoiceEsToEn([word], new Set());
+    else if (typeIdx === 1) ex = genTranslate([word], new Set());
+    else if (typeIdx === 2) ex = genChoiceEnToEs([word], new Set());
+    else ex = genListen([word], new Set());
+    if (ex) exercises.push(ex);
+  });
+  lesson = {
+    dayData: syntheticDay, exercises: exercises, currentIdx: 0, answered: false,
+    xpEarned: 0, heartsLost: 0, requeue: [], requeueIdx: 0, failedThisLesson: []
+  };
+  renderQuestion();
+}
+
+function startQuickPractice() {
+  const words = getAllUnlockedWords();
+  if (words.length < 2) {
+    showToast(t('Complete a lesson first!','¡Completa una lección primero!'));
+    return;
+  }
+  const picked = shuffle(words).slice(0, 5);
+  const exercises = [];
+  picked.forEach((word, i) => {
+    let ex = null;
+    const typeIdx = i % 3;
+    if (typeIdx === 0) ex = genChoiceEsToEn([word], new Set());
+    else if (typeIdx === 1) ex = genTranslate([word], new Set());
+    else ex = genListen([word], new Set());
+    if (ex) exercises.push(ex);
+  });
+  lesson = {
+    dayData: { day: 'Quick', phase: 1, vocab: { words: picked }, exercises: [], checkpoint: false, title: t('Quick Practice','Práctica Rápida') },
+    exercises, currentIdx: 0, answered: false,
+    xpEarned: 0, heartsLost: 0, requeue: [], requeueIdx: 0, failedThisLesson: []
+  };
+  renderQuestion();
 }
 
 // ===== VOCAB BROWSER =====
 function showVocabBrowser() {
   const words = getAllUnlockedWords();
   const root = document.getElementById('root');
-  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Vocabulary','Vocabulario')} <span style="font-weight:400;font-size:13px;color:rgba(255,255,255,.6)">${words.length}</span></div><button class="btn-leave" onclick="render()">✕</button></div></div>
+    root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Vocabulary','Vocabulario')} <span style="font-weight:400;font-size:13px;color:rgba(255,255,255,.6)">${words.length}</span></div><button class="btn-close" onclick="render()">✕</button></div></div>
     <div style="padding:12px;max-width:480px;margin:0 auto"><input class="search-bar" id="vocabSearch" placeholder="${t('Search words...','Buscar palabras...')}"></div>
     <div class="vocab-list" id="vocabList">${words.map(w => `<div class="vocab-item vocab-entry"><span class="es">${w.es}</span><span class="en">${w.en}</span></div>`).join('')}</div>`;
   document.getElementById('vocabSearch')?.addEventListener('input', function() {
@@ -1499,7 +2284,7 @@ function showStats() {
   const wordCount = getAllUnlockedWords().length;
   const lessonsDone = state.completed.filter(d => { const dd = getDayData(d); return dd && !dd.checkpoint; }).length;
   const chkDone = state.completed.filter(d => { const dd = getDayData(d); return dd && dd.checkpoint; }).length;
-  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Stats','Estadísticas')}</div><button class="btn-leave" onclick="render()">✕</button></div></div>
+  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Stats','Estadísticas')}</div><button class="btn-close" onclick="render()">✕</button></div></div>
     <div class="stats-grid">
       <div class="stat-card purple"><div class="stat-num-large purple">${acc}%</div><div class="stat-label">${t('Accuracy','Precisión')}</div></div>
       <div class="stat-card green"><div class="stat-num-large green">${state.streak}</div><div class="stat-label">${t('Streak','Racha')}</div></div>
@@ -1516,7 +2301,7 @@ function showStats() {
 // ===== BADGES =====
 function showBadges() {
   const root = document.getElementById('root');
-  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Badges','Insignias')} <span style="font-weight:400;font-size:13px;color:rgba(255,255,255,.6)">${state.badges.length}/${ALL_BADGES.length}</span></div><button class="btn-leave" onclick="render()">✕</button></div></div>
+  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Badges','Insignias')} <span style="font-weight:400;font-size:13px;color:rgba(255,255,255,.6)">${state.badges.length}/${ALL_BADGES.length}</span></div><button class="btn-close" onclick="render()">✕</button></div></div>
     <div class="badges-grid">${ALL_BADGES.map(b => {
       const earned = state.badges.includes(b.id);
       return `<div class="badge-item ${earned?'':'locked'}"><div class="badge-icon">${b.icon}</div><div class="badge-name">${badgeLabel(b)}</div><div class="badge-desc">${badgeDesc(b)}</div></div>`;
@@ -1528,7 +2313,7 @@ function showBadges() {
 function showDailyQuests() {
   generateDailyQuests();
   const root = document.getElementById('root');
-  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Daily Quests','Misiones Diarias')}</div><button class="btn-leave" onclick="render()">✕</button></div></div>
+  root.innerHTML = `<div class="top-bar"><div class="top-inner"><div style="font-size:15px;font-weight:700;flex:1;color:#fff">${t('Daily Quests','Misiones Diarias')}</div><button class="btn-close" onclick="render()">✕</button></div></div>
     <div class="quests-list">${(state.dailyQuests || []).map(q => {
       const done = q.progress >= q.goal;
       return `<div class="quest-item ${done?'completed':''}"><div class="quest-icon">${q.icon}</div><div class="quest-info"><div class="quest-title">${questLabel(q)}</div><div class="quest-progress">${Math.min(q.progress, q.goal)}/${q.goal}</div></div><div class="quest-check">${done?'✓':''}</div></div>`;
@@ -1549,24 +2334,93 @@ function importProgress() {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.json';
+  input.style.display = 'none';
+  olParent().appendChild(input);
   input.onchange = e => {
     const file = e.target.files[0];
-    if (!file) return;
+    if (!file) { input.remove(); return; }
     const reader = new FileReader();
     reader.onload = ev => {
+      input.remove();
       try {
         const data = JSON.parse(ev.target.result);
-        if (data && 'completed' in data) { state = data; saveState(); render(); showToast(t('Progress imported!','¡Progreso importado!')); }
-        else showToast(t('Invalid file','Archivo inválido'));
-      } catch(err) { showToast(t('Invalid file','Archivo inválido')); }
+        const isValid = data && typeof data === 'object' && Array.isArray(data.completed)
+          && typeof data.xp === 'number' && typeof data.hearts === 'number' && typeof data.streak === 'number';
+        if (isValid) {
+          state = {
+            ...defaultState(),
+            ...data,
+            xp: Math.max(0, data.xp),
+            hearts: Math.min(5, Math.max(0, data.hearts)),
+            streak: Math.max(0, data.streak || 0),
+            gems: Math.max(0, data.gems || 0)
+          };
+          saveState(); render(); showToast(t('Progress imported!','¡Progreso importado!'));
+        } else showToast(t('Invalid file','Archivo inválido'));
+      } catch(err) { input.remove(); showToast(t('Invalid file','Archivo inválido')); }
     };
     reader.readAsText(file);
   };
   input.click();
 }
 
+// ===== VOICE SETTINGS =====
+function showVoiceSettings() {
+  const root = document.getElementById('root');
+  const variant = state.spanishVariant || 'es-MX';
+  const voices = getSpanishVoices();
+  const best = getBestVoice();
+
+  root.innerHTML = `<div class="top-bar"><div class="top-inner">
+    <div style="font-size:15px;font-weight:700;flex:1;color:#fff">🔊 ${t('Voice Settings','Configuración de Voz')}</div>
+    <button class="btn-close" onclick="render()">✕</button>
+  </div></div>
+  <div class="voice-page">
+    <div class="vs-section">
+      <div class="vs-label">${t('Spanish Variant','Variante de Español')}</div>
+      <div class="vs-variant-row">
+        <button class="vs-variant${variant==='es-MX'?' active':''}" data-variant="es-MX">🌎 ${t('Latin America','Latinoamérica')}</button>
+        <button class="vs-variant${variant==='es-ES'?' active':''}" data-variant="es-ES">🇪🇸 ${t('Spain','España')}</button>
+      </div>
+      <div class="vs-hint">${t('Latin American Spanish is more widely used worldwide.','El español latinoamericano es más usado en el mundo.')}</div>
+    </div>
+    <div class="vs-section">
+      <div class="vs-label">${t('Voice','Voz')}</div>
+      ${voices.length === 0 ? `<div class="vs-empty">${t('No Spanish voices found on your device. Try Google Chrome for the best voices.','No se encontraron voces en español en tu dispositivo. Prueba Google Chrome para mejores voces.')}</div>` : ''}
+      <div class="vs-list">
+        ${voices.map(v => {
+          const sel = state.voiceURI === v.voiceURI || (!state.voiceURI && v === best);
+          return `<div class="vs-item${sel?' sel':''}" data-uri="${v.voiceURI}">
+            <div class="vs-item-name">${v.name}</div>
+            <div class="vs-item-lang">${v.lang}${sel ? '  ✓' : ''}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="vs-hint">${t('Google voices (Chrome) sound most natural. Tap a voice to preview and select.','Las voces de Google (Chrome) suenan más naturales. Toca una voz para previsualizar y seleccionar.')}</div>
+    </div>
+  </div>`;
+
+  document.querySelectorAll('.vs-variant').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.spanishVariant = btn.dataset.variant;
+      saveState();
+      showVoiceSettings();
+    });
+  });
+
+  document.querySelectorAll('.vs-item').forEach(item => {
+    item.addEventListener('click', () => {
+      state.voiceURI = item.dataset.uri;
+      saveState();
+      showVoiceSettings();
+      setTimeout(() => speak('Hola, ¿cómo estás?', 0.9), 100);
+    });
+  });
+}
+
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', () => {
+  initVoices();
   refillHearts();
   applyTheme();
   render();

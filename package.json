@@ -1,0 +1,39 @@
+{
+  "name": "espanol-150",
+  "version": "1.0.0",
+  "description": "Professional Spanish Learning Application",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "keywords": [],
+  "author": "opencode",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.espanol150.app",
+    "productName": "Español 150",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "icon.svg"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "files": [
+      "**/*",
+      "!dist/**/*",
+      "!package-lock.json",
+      "!node_modules"
+    ]
+  }
+}

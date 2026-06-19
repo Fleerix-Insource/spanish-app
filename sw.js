@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'espanol';
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const CACHE = CACHE_PREFIX + '-v' + CACHE_VERSION;
 const URLS = ['index.html','style.css','app.js','curriculum.js','manifest.json','icon.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(URLS)).then(() => self.skipWaiting())); });
