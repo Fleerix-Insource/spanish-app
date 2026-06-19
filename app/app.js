@@ -1149,20 +1149,25 @@ function render() {
 function renderPath(root) {
   refillHearts();
   const phases = [1,2,3,4,5];
-  let html = `<div class="top-bar"><div class="top-inner">
-    <div class="stat-group">
-      <div class="stat gold"><span class="stat-icon pulse-slow">🔥</span><span class="stat-num">${state.streak}</span></div>
-      <div class="stat blue"><span class="stat-icon">💎</span><span class="stat-num">${state.gems}</span></div>
-      <div class="stat red"><span class="hearts-display">${Array.from({length:MAX_HEARTS},(_,i)=>`<span class="heart${i<state.hearts?'':' lost'}">❤️</span>`).join('')}</span></div>
+  let html = `<div class="top-bar"><div class="window-controls">
+      <div class="win-btn win-close" id="winClose">✕</div>
+      <div class="win-btn win-min" id="winMin">−</div>
+      <div class="win-btn win-max" id="winMax">□</div>
     </div>
-    <span class="xp-number">${state.xp} XP</span>
-    <span class="lang-toggle" id="langToggle">${state.useSpanish?'ES':'EN'}</span>
-    <button class="btn-theme" id="themeBtn">${state.darkMode?'☀️':'🌙'}</button>
-    <button class="btn-voice" id="voiceBtn">🔊</button>
-    <button class="btn-compact" id="compactBtn" title="${t('Compact Mode','Modo Compacto')}">${state.compactMode?'🗖':'🗗'}</button>
-    <button class="btn-menu" id="menuBtn">☰</button>
-  </div></div>
-  <div class="path-view">`;
+    <div class="top-inner">
+      <div class="stat-group">
+        <div class="stat gold"><span class="stat-icon pulse-slow">🔥</span><span class="stat-num">${state.streak}</span></div>
+        <div class="stat blue"><span class="stat-icon">💎</span><span class="stat-num">${state.gems}</span></div>
+        <div class="stat red"><span class="hearts-display">${Array.from({length:MAX_HEARTS},(_,i)=>`<span class="heart${i<state.hearts?'':' lost'}">❤️</span>`).join('')}</span></div>
+      </div>
+      <span class="xp-number">${state.xp} XP</span>
+      <span class="lang-toggle" id="langToggle">${state.useSpanish?'ES':'EN'}</span>
+      <button class="btn-theme" id="themeBtn">${state.darkMode?'☀️':'🌙'}</button>
+      <button class="btn-voice" id="voiceBtn">🔊</button>
+      <button class="btn-compact" id="compactBtn" title="${t('Compact Mode','Modo Compacto')}">${state.compactMode?'🗖':'🗗'}</button>
+      <button class="btn-menu" id="menuBtn">☰</button>
+    </div></div>
+    <div class="path-view">`;
 
   phases.forEach(ph => {
     const days = CURRICULUM.filter(d => d.phase === ph);
@@ -1350,20 +1355,25 @@ function renderQuestion() {
     progDots += `<div class="prog-dot ${cls}"></div>`;
   }
 
-  let html = `<div class="top-bar"><div class="top-inner">
-    <div class="stat-group">
-      <div class="stat gold"><span class="stat-icon pulse-slow">🔥</span><span class="stat-num">${state.streak}</span></div>
-      <div class="stat blue"><span style="font-size:15px;font-weight:700;color:#fff">+${lesson.xpEarned} XP</span></div>
-      ${lesson.combo >= 3 ? `<div class="stat" style="background:var(--gold);padding:2px 8px;border-radius:12px;font-size:13px;font-weight:700;color:#1a1a2e">🔥 ×${lesson.combo}</div>` : ''}
-      <div class="stat red"><span class="hearts-display">${Array.from({length:MAX_HEARTS},(_,i)=>`<span class="heart${i<state.hearts?'':' lost'}">❤️</span>`).join('')}</span></div>
+  let html = `<div class="top-bar"><div class="window-controls">
+      <div class="win-btn win-close" id="winClose">✕</div>
+      <div class="win-btn win-min" id="winMin">−</div>
+      <div class="win-btn win-max" id="winMax">□</div>
     </div>
-    <span class="lang-toggle" id="langToggle">${state.useSpanish?'ES':'EN'}</span>
-    <button class="btn-theme" id="themeBtn">${state.darkMode?'☀️':'🌙'}</button>
-    <button class="btn-voice" id="voiceBtn">🔊</button>
-    <button class="btn-compact" id="compactBtn" title="${t('Compact Mode','Modo Compacto')}">${state.compactMode?'🗖':'🗗'}</button>
-    <button class="btn-leave" onclick="leaveLesson()">${t('Continue learning','Continuar aprendiendo')}</button>
-  </div></div>
-  <div class="lesson-view">
+    <div class="top-inner">
+      <div class="stat-group">
+        <div class="stat gold"><span class="stat-icon pulse-slow">🔥</span><span class="stat-num">${state.streak}</span></div>
+        <div class="stat blue"><span style="font-size:15px;font-weight:700;color:#fff">+${lesson.xpEarned} XP</span></div>
+        ${lesson.combo >= 3 ? `<div class="stat" style="background:var(--gold);padding:2px 8px;border-radius:12px;font-size:13px;font-weight:700;color:#1a1a2e">🔥 ×${lesson.combo}</div>` : ''}
+        <div class="stat red"><span class="hearts-display">${Array.from({length:MAX_HEARTS},(_,i)=>`<span class="heart${i<state.hearts?'':' lost'}">❤️</span>`).join('')}</span></div>
+      </div>
+      <span class="lang-toggle" id="langToggle">${state.useSpanish?'ES':'EN'}</span>
+      <button class="btn-theme" id="themeBtn">${state.darkMode?'☀️':'🌙'}</button>
+      <button class="btn-voice" id="voiceBtn">🔊</button>
+      <button class="btn-compact" id="compactBtn" title="${t('Compact Mode','Modo Compacto')}">${state.compactMode?'🗖':'🗗'}</button>
+      <button class="btn-leave" onclick="leaveLesson()">${t('Continue learning','Continuar aprendiendo')}</button>
+    </div></div>
+    <div class="lesson-view">
     <div class="lesson-progress">${progDots}</div>
     ${lesson.phase === 'review' ? `<div style="text-align:center;font-size:13px;font-weight:700;color:var(--gold);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">${t('Review Mistakes','Repasar Errores')}</div>` : ''}
     <div class="exercise-card spring-in" id="exCard">`;
@@ -1554,7 +1564,25 @@ function renderQuestion() {
   });
   document.getElementById('themeBtn')?.addEventListener('click', () => { state.darkMode = !state.darkMode; saveState(); applyTheme(); renderQuestion(); });
   document.getElementById('voiceBtn')?.addEventListener('click', () => { showVoiceSettings(); });
-  document.getElementById('compactBtn')?.addEventListener('click', toggleCompact);
+  document.getElementById('compactBtn')?.addEventListener('click', () => {
+    toggleCompact();
+    window.electronAPI.setWindowState(state.compactMode ? 'mini' : 'full');
+  });
+  document.getElementById('winClose')?.addEventListener('click', () => window.electronAPI.windowControl('close'));
+  document.getElementById('winMin')?.addEventListener('click', () => window.electronAPI.windowControl('minimize'));
+  document.getElementById('winMax')?.addEventListener('click', () => window.electronAPI.windowControl('maximize'));
+  document.getElementById('hintBtn')?.addEventListener('click', () => {
+    playSFX('click');
+    const input = document.getElementById('transInput');
+    if (!input) return;
+    const firstChar = ex.answer[0];
+    if (input.value.length === 0) {
+      input.value = firstChar;
+      input.focus();
+    } else {
+      showToast(`💡 Hint: The answer starts with "${firstChar}"`);
+    }
+  });
 }
 
 // ===== CHECK ANSWERS =====

@@ -1,4 +1,6 @@
-// Preload script for secure communication between Electron main and renderer process
-window.addEventListener('DOMContentLoaded', () => {
-  console.log('Español 150: Native Bridge Loaded');
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('electronAPI', {
+  setWindowState: (state) => ipcRenderer.send('set-window-state', state),
+  windowControl: (action) => ipcRenderer.send('window-control', action),
 });
