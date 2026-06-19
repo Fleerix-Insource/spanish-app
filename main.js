@@ -17,7 +17,7 @@ function createWindow() {
     autoHideMenuBar: true, // Hides the default browser menu for a native app feel
   });
 
-  win.loadFile('index.html');
+  win.loadFile('app/index.html');
 
   // Remove the default menu entirely
   Menu.setApplicationMenu(null);

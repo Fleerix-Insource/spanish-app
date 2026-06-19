@@ -1,24 +1,109 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<meta name="theme-color" content="#58cc02">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Español 150">
-<link rel="manifest" href="manifest.json">
-<link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon.svg">
-<title>Español 150</title>
-<link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Español 150 | Master Spanish with Native Precision</title>
+    <link rel="stylesheet" href="landing.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 </head>
 <body>
-<div id="root"></div>
-<script>
-if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
-</script>
-<script src="curriculum.js"></script>
-<script src="app.js"></script>
+
+    <nav>
+        <a href="#" class="logo">
+            <span style="font-size: 28px">🇪🇸</span> Español 150
+        </a>
+        <a href="app/index.html" class="btn btn-secondary" style="padding: 8px 16px; font-size: 14px">Try Online</a>
+    </nav>
+
+    <section class="hero">
+        <div class="hero-content">
+            <h1>Master Spanish.<br>Native Style.</h1>
+            <p>A professional 150-day structured journey from A0 to B2. Experience a gamified, native-feeling application designed for rapid fluency.</p>
+            <div class="cta-group">
+                <a href="dist/Español 150 Setup.exe" class="btn btn-primary">
+                    <span>📥</span> Download for Windows
+                </a>
+                <a href="app/index.html" class="btn btn-secondary">
+                    <span>🌐</span> Try in Browser
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <section class="features">
+        <h2 class="section-title reveal">Why Español 150?</h2>
+        <div class="feature-grid">
+            <div class="feature-card reveal">
+                <span class="feature-icon">🚀</span>
+                <h3>Native Desktop Experience</h3>
+                <p>No more browser tabs. Run Español 150 as a standalone app with a dedicated Mini-Player mode for multitasking.</p>
+            </div>
+            <div class="feature-card reveal">
+                <span class="feature-icon">🔄</span>
+                <h3>Bidirectional Fluency</h3>
+                <p>Master both production and comprehension with translation exercises that switch directions dynamically.</p>
+            </div>
+            <div class="feature-card reveal">
+                <span class="feature-icon">💡</span>
+                <h3>Smart Hint System</h3>
+                <p>Never stay stuck. Get a gentle nudge with the hint system that guides you toward the correct answer.</p>
+            </div>
+            <div class="feature-card reveal">
+                <span class="feature-icon">📈</span>
+                <h3>Smarter Progression</h3>
+                <p>150 days of curated content, checkpoint assessments, and an intelligent review system for your weak words.</p>
+            </div>
+            <div class="feature-card reveal">
+                <span class="feature-icon">🔊</span>
+                <div style="margin-bottom:16px; font-weight:700; color:var(--white)">Dual Accents</div>
+                <p>Switch seamlessly between Mexican (es-MX) and Castilian (es-ES) Spanish to suit your learning goals.</p>
+            </div>
+            <div class="feature-card reveal">
+                <span class="feature-icon">🏆</span>
+                <h3>Gamified Mastery</h3>
+                <p>Earn XP, maintain your daily streak, and unlock achievement badges as you climb the path to fluency.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="preview">
+        <h2 class="section-title reveal">Designed for Focus</h2>
+        <div class="preview-window reveal">
+            <div class="preview-header">
+                <div class="dot dot-red"></div>
+                <div class="dot dot-yellow"></div>
+                <div class="dot dot-green"></div>
+            </div>
+            <img src="app/icon.svg" alt="App Preview" class="preview-img" style="background: var(--dark-bg); padding: 100px; display: block; margin: auto; width: 200px; height: 200px; object-fit: contain;">
+        </div>
+        <p class="reveal" style="margin-top: 40px; color: var(--text-muted); max-width: 600px; margin-left: auto; margin-right: auto;">
+            Experience a clean, distraction-free interface that focuses entirely on your learning journey.
+        </p>
+    </section>
+
+    <section class="disclosure reveal">
+        <p>This application was developed with the assistance of <strong>opencode (powered by gemma-4-31b-it)</strong>, utilizing advanced AI for architecture, logic refinement, and native app implementation.</p>
+    </section>
+
+    <footer>
+        <p>&copy; 2026 Español 150. Built for fluency.</p>
+    </footer>
+
+    <script>
+        // Scroll Reveal Animation
+        const observerOptions = { threshold: 0.1 };
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('active');
+                }
+            });
+        }, observerOptions);
+
+        document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+    </script>
 </body>
 </html>
